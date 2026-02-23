@@ -5,7 +5,6 @@
 // Generated shape per definition:
 // - F_<id>(stack, s_pos, base): WNF stack adapter
 // - FH_<id>(argc, args, depth): hot Term path (monolithic nested control flow)
-// - NH_<id>(argc, args, depth): numeric u32 path (monolithic nested control flow)
 //
 // There is no planner/state machine and no per-node helper function explosion.
 
@@ -131,47 +130,6 @@ fn void aot_emit_hot_fail_apply(FILE *f, u64 loc, u32 dep, const char *pad, cons
   }
 
   fprintf(f, "%sreturn aot_hot_fail_apply_env(%lluULL, %u, env, %s, %s, %s);\n", pad, (unsigned long long)loc, dep, argc, args, i);
-}
-
-// Static APP-REF Collector
-// ------------------------
-
-// Collects APP arguments when `loc` is an APP-chain headed by REF.
-// Returns 1 on success and stores args in call order.
-fn int aot_emit_collect_app_ref(u64 loc, u16 *out_ref_id, u16 *out_arg_len, u64 out_args[AOT_HOT_ARG_CAP]) {
-  u64 head_loc = loc;
-  u64 rev[AOT_HOT_ARG_CAP];
-  u16 rev_len = 0;
-
-  for (;;) {
-    Term head = heap_read(head_loc);
-    if (term_tag(head) != APP) {
-      break;
-    }
-
-    if (rev_len >= AOT_HOT_ARG_CAP) {
-      return 0;
-    }
-
-    u64 app_loc = term_val(head);
-    rev[rev_len] = app_loc + 1;
-    rev_len++;
-    head_loc = app_loc + 0;
-  }
-
-  Term head = heap_read(head_loc);
-  if (term_tag(head) != REF) {
-    return 0;
-  }
-
-  *out_ref_id  = term_ext(head);
-  *out_arg_len = rev_len;
-
-  for (u16 i = 0; i < rev_len; i++) {
-    out_args[i] = rev[rev_len - 1 - i];
-  }
-
-  return 1;
 }
 
 // Hot Emitters
@@ -307,227 +265,6 @@ fn void aot_emit_hot_apply(FILE *f, u32 def_id, u64 loc, u32 dep, const char *ar
   }
 }
 
-// Numeric Emitters
-// ----------------
-
-// Forward declarations for recursive numeric emitters.
-fn void aot_emit_num_expr(FILE *f, u32 def_id, u64 loc, u32 dep, const char *dst, const char *pad, u32 *tmp);
-fn void aot_emit_num_apply(FILE *f, u32 def_id, u64 loc, u32 dep, const char *argc, const char *args, const char *i, const char *pad, u32 *tmp);
-
-// Emits one numeric expression fragment that sets `dst`.
-fn void aot_emit_num_expr(FILE *f, u32 def_id, u64 loc, u32 dep, const char *dst, const char *pad, u32 *tmp) {
-  Term term = heap_read(loc);
-  u8   tag  = term_tag(term);
-
-  char pad1[128];
-  aot_emit_pad_next(pad1, sizeof(pad1), pad);
-
-  switch (tag) {
-    case VAR:
-    case BJV:
-    case DP0:
-    case BJ0:
-    case DP1:
-    case BJ1: {
-      u64 lvl = term_val(term);
-      if (lvl == 0 || lvl > dep) {
-        fprintf(f, "%s%s = aot_num_fail();\n", pad, dst);
-      } else {
-        fprintf(f, "%s%s = aot_num_ok(x%llu);\n", pad, dst, (unsigned long long)(lvl - 1));
-      }
-      return;
-    }
-
-    case NUM: {
-      fprintf(f, "%s%s = aot_num_ok(%uU);\n", pad, dst, (u32)term_val(term));
-      return;
-    }
-
-    case OP2: {
-      u64 op2_loc = term_val(term);
-      char lhs[32];
-      char rhs[32];
-      aot_emit_tmp(lhs, sizeof(lhs), "lhs", tmp);
-      aot_emit_tmp(rhs, sizeof(rhs), "rhs", tmp);
-
-      fprintf(f, "%sdo {\n", pad);
-      fprintf(f, "%sAotNumRes %s;\n", pad1, lhs);
-      aot_emit_num_expr(f, def_id, op2_loc + 0, dep, lhs, pad1, tmp);
-      fprintf(f, "%sif (!%s.ok) {\n", pad1, lhs);
-      fprintf(f, "%s%s = aot_num_fail();\n", pad1, dst);
-      fprintf(f, "%sbreak;\n", pad1);
-      fprintf(f, "%s}\n", pad1);
-      fprintf(f, "%sAotNumRes %s;\n", pad1, rhs);
-      aot_emit_num_expr(f, def_id, op2_loc + 1, dep, rhs, pad1, tmp);
-      fprintf(f, "%sif (!%s.ok) {\n", pad1, rhs);
-      fprintf(f, "%s%s = aot_num_fail();\n", pad1, dst);
-      fprintf(f, "%sbreak;\n", pad1);
-      fprintf(f, "%s}\n", pad1);
-      aot_emit_itrs_inc(f, pad1);
-      switch (term_ext(term)) {
-        case OP_ADD: fprintf(f, "%s%s = aot_num_ok(%s.val + %s.val);\n", pad1, dst, lhs, rhs); break;
-        case OP_SUB: fprintf(f, "%s%s = aot_num_ok(%s.val - %s.val);\n", pad1, dst, lhs, rhs); break;
-        case OP_MUL: fprintf(f, "%s%s = aot_num_ok(%s.val * %s.val);\n", pad1, dst, lhs, rhs); break;
-        case OP_DIV: fprintf(f, "%s%s = aot_num_ok(%s.val != 0 ? %s.val / %s.val : 0U);\n", pad1, dst, rhs, lhs, rhs); break;
-        case OP_MOD: fprintf(f, "%s%s = aot_num_ok(%s.val != 0 ? %s.val %% %s.val : 0U);\n", pad1, dst, rhs, lhs, rhs); break;
-        case OP_AND: fprintf(f, "%s%s = aot_num_ok(%s.val & %s.val);\n", pad1, dst, lhs, rhs); break;
-        case OP_OR:  fprintf(f, "%s%s = aot_num_ok(%s.val | %s.val);\n", pad1, dst, lhs, rhs); break;
-        case OP_XOR: fprintf(f, "%s%s = aot_num_ok(%s.val ^ %s.val);\n", pad1, dst, lhs, rhs); break;
-        case OP_LSH: fprintf(f, "%s%s = aot_num_ok(%s.val << %s.val);\n", pad1, dst, lhs, rhs); break;
-        case OP_RSH: fprintf(f, "%s%s = aot_num_ok(%s.val >> %s.val);\n", pad1, dst, lhs, rhs); break;
-        case OP_NOT: fprintf(f, "%s%s = aot_num_ok(~%s.val);\n", pad1, dst, rhs); break;
-        case OP_EQ:  fprintf(f, "%s%s = aot_num_ok(%s.val == %s.val ? 1U : 0U);\n", pad1, dst, lhs, rhs); break;
-        case OP_NE:  fprintf(f, "%s%s = aot_num_ok(%s.val != %s.val ? 1U : 0U);\n", pad1, dst, lhs, rhs); break;
-        case OP_LT:  fprintf(f, "%s%s = aot_num_ok(%s.val < %s.val ? 1U : 0U);\n", pad1, dst, lhs, rhs); break;
-        case OP_LE:  fprintf(f, "%s%s = aot_num_ok(%s.val <= %s.val ? 1U : 0U);\n", pad1, dst, lhs, rhs); break;
-        case OP_GT:  fprintf(f, "%s%s = aot_num_ok(%s.val > %s.val ? 1U : 0U);\n", pad1, dst, lhs, rhs); break;
-        case OP_GE:  fprintf(f, "%s%s = aot_num_ok(%s.val >= %s.val ? 1U : 0U);\n", pad1, dst, lhs, rhs); break;
-        default:     fprintf(f, "%s%s = aot_num_fail();\n", pad1, dst); break;
-      }
-      fprintf(f, "%s} while (0);\n", pad);
-      return;
-    }
-
-    case DUP: {
-      u64 dup_loc = term_val(term);
-      char val[32];
-      aot_emit_tmp(val, sizeof(val), "val", tmp);
-
-      fprintf(f, "%sdo {\n", pad);
-      fprintf(f, "%sAotNumRes %s;\n", pad1, val);
-      aot_emit_num_expr(f, def_id, dup_loc + 0, dep, val, pad1, tmp);
-      fprintf(f, "%sif (!%s.ok) {\n", pad1, val);
-      fprintf(f, "%s%s = aot_num_fail();\n", pad1, dst);
-      fprintf(f, "%sbreak;\n", pad1);
-      fprintf(f, "%s}\n", pad1);
-      if (dep >= AOT_HOT_ENV_CAP) {
-        fprintf(f, "%s%s = aot_num_fail();\n", pad1, dst);
-        fprintf(f, "%sbreak;\n", pad1);
-        fprintf(f, "%s} while (0);\n", pad);
-        return;
-      }
-      fprintf(f, "%su32 x%u = %s.val;\n", pad1, dep, val);
-      aot_emit_itrs_inc(f, pad1);
-      aot_emit_num_expr(f, def_id, dup_loc + 1, dep + 1, dst, pad1, tmp);
-      fprintf(f, "%s} while (0);\n", pad);
-      return;
-    }
-
-    case APP: {
-      u16 ref_id = 0;
-      u16 arg_len = 0;
-      u64 arg_locs[AOT_HOT_ARG_CAP];
-
-      if (!aot_emit_collect_app_ref(loc, &ref_id, &arg_len, arg_locs)) {
-        fprintf(f, "%s%s = aot_num_fail();\n", pad, dst);
-        return;
-      }
-
-      u16 cap = arg_len == 0 ? 1 : arg_len;
-      char call_args[32];
-      char ok_name[32];
-      aot_emit_tmp(call_args, sizeof(call_args), "call_args", tmp);
-      aot_emit_tmp(ok_name, sizeof(ok_name), "ok", tmp);
-
-      fprintf(f, "%sdo {\n", pad);
-      fprintf(f, "%su32 %s[%u];\n", pad1, call_args, cap);
-      fprintf(f, "%su8 %s = 1;\n", pad1, ok_name);
-
-      for (u16 i_arg = 0; i_arg < arg_len; i_arg++) {
-        char arg_name[32];
-        aot_emit_tmp(arg_name, sizeof(arg_name), "arg", tmp);
-        fprintf(f, "%sAotNumRes %s;\n", pad1, arg_name);
-        aot_emit_num_expr(f, def_id, arg_locs[i_arg], dep, arg_name, pad1, tmp);
-        fprintf(f, "%sif (!%s.ok) {\n", pad1, arg_name);
-        fprintf(f, "%s%s = aot_num_fail();\n", pad1, dst);
-        fprintf(f, "%s%s = 0;\n", pad1, ok_name);
-        fprintf(f, "%sbreak;\n", pad1);
-        fprintf(f, "%s}\n", pad1);
-        fprintf(f, "%s%s[%u] = %s.val;\n", pad1, call_args, i_arg, arg_name);
-      }
-
-      fprintf(f, "%sif (!%s) {\n", pad1, ok_name);
-      fprintf(f, "%sbreak;\n", pad1);
-      fprintf(f, "%s}\n", pad1);
-      if (ref_id == def_id) {
-        fprintf(f, "%s%s = NH_%u(%u, %s, depth + 1);\n", pad1, dst, def_id, arg_len, call_args);
-      } else {
-        fprintf(f, "%s%s = aot_num_apply_ref(%u, %u, %s, depth + 1);\n", pad1, dst, ref_id, arg_len, call_args);
-      }
-      fprintf(f, "%s} while (0);\n", pad);
-      return;
-    }
-
-    default: {
-      fprintf(f, "%s%s = aot_num_fail();\n", pad, dst);
-      return;
-    }
-  }
-}
-
-// Emits one numeric apply fragment that returns from NH_<id>.
-fn void aot_emit_num_apply(FILE *f, u32 def_id, u64 loc, u32 dep, const char *argc, const char *args, const char *i, const char *pad, u32 *tmp) {
-  Term term = heap_read(loc);
-  u8   tag  = term_tag(term);
-
-  char pad1[128];
-  aot_emit_pad_next(pad1, sizeof(pad1), pad);
-  aot_emit_hot_wnf_comment(f, loc, pad);
-
-  switch (tag) {
-    case LAM: {
-      if (dep >= AOT_HOT_ENV_CAP) {
-        fprintf(f, "%sreturn aot_num_fail();\n", pad);
-        return;
-      }
-
-      char i1[32];
-      char x_name[32];
-      aot_emit_tmp(i1, sizeof(i1), "i", tmp);
-      snprintf(x_name, sizeof(x_name), "x%u", dep);
-
-      fprintf(f, "%sif (%s >= %s) {\n", pad, i, argc);
-      fprintf(f, "%sreturn aot_num_fail();\n", pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%su32 %s = %s[%s];\n", pad, x_name, args, i);
-      fprintf(f, "%su16 %s = %s + 1;\n", pad, i1, i);
-      aot_emit_itrs_inc(f, pad);
-      aot_emit_num_apply(f, def_id, term_val(term), dep + 1, argc, args, i1, pad, tmp);
-      return;
-    }
-
-    case SWI: {
-      u64 mat_loc = term_val(term);
-      char i1[32];
-      aot_emit_tmp(i1, sizeof(i1), "i", tmp);
-
-      fprintf(f, "%sif (%s >= %s) {\n", pad, i, argc);
-      fprintf(f, "%sreturn aot_num_fail();\n", pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%sif (%s[%s] == %uU) {\n", pad, args, i, term_ext(term));
-      fprintf(f, "%su16 %s = %s + 1;\n", pad1, i1, i);
-      aot_emit_itrs_inc(f, pad1);
-      aot_emit_num_apply(f, def_id, mat_loc + 0, dep, argc, args, i1, pad1, tmp);
-      fprintf(f, "%s}\n", pad);
-      aot_emit_itrs_inc(f, pad);
-      aot_emit_num_apply(f, def_id, mat_loc + 1, dep, argc, args, i, pad, tmp);
-      return;
-    }
-
-    default: {
-      fprintf(f, "%sif (%s < %s) {\n", pad, i, argc);
-      fprintf(f, "%sreturn aot_num_fail();\n", pad1);
-      fprintf(f, "%s}\n", pad);
-      char out_name[32];
-      aot_emit_tmp(out_name, sizeof(out_name), "out", tmp);
-      fprintf(f, "%sAotNumRes %s;\n", pad, out_name);
-      aot_emit_num_expr(f, def_id, loc, dep, out_name, pad, tmp);
-      fprintf(f, "%sreturn %s;\n", pad, out_name);
-      return;
-    }
-  }
-}
-
 // Definition Emitter
 // ------------------
 
@@ -544,20 +281,9 @@ fn void aot_emit_def(FILE *f, u32 id) {
 
   u64 root = BOOK[id];
 
-  fprintf(f, "// Compiled hot/numeric paths for @%s (id %u).\n", name, id);
+  fprintf(f, "// Compiled hot paths for @%s (id %u).\n", name, id);
   fprintf(f, "static AotHotRes FH_%u(u16 argc, const Term *args, u32 depth);\n", id);
-  fprintf(f, "static AotNumRes NH_%u(u16 argc, const u32 *args, u32 depth);\n\n", id);
-
-  fprintf(f, "static AotNumRes NH_%u(u16 argc, const u32 *args, u32 depth) {\n", id);
-  fprintf(f, "  if (depth >= AOT_HOT_MAX_DEPTH) {\n");
-  fprintf(f, "    return aot_num_fail();\n");
-  fprintf(f, "  }\n");
-  fprintf(f, "  u16 i = 0;\n");
-  {
-    u32 tmp = 0;
-    aot_emit_num_apply(f, id, root, 0, "argc", "args", "i", "  ", &tmp);
-  }
-  fprintf(f, "}\n\n");
+  fprintf(f, "\n");
 
   fprintf(f, "static AotHotRes FH_%u(u16 argc, const Term *args, u32 depth) {\n", id);
   fprintf(f, "  if (depth >= AOT_HOT_MAX_DEPTH) {\n");
@@ -565,21 +291,9 @@ fn void aot_emit_def(FILE *f, u32 id) {
   fprintf(f, "    return aot_hot_fail(call);\n");
   fprintf(f, "  }\n");
   fprintf(f, "\n");
-  fprintf(f, "  if (argc <= AOT_HOT_ARG_CAP) {\n");
-  fprintf(f, "    u32 num_args[AOT_HOT_ARG_CAP];\n");
-  fprintf(f, "    u16 k = 0;\n");
-  fprintf(f, "    for (; k < argc; k++) {\n");
-  fprintf(f, "      if (term_tag(args[k]) != NUM) {\n");
-  fprintf(f, "        break;\n");
-  fprintf(f, "      }\n");
-  fprintf(f, "      num_args[k] = (u32)term_val(args[k]);\n");
-  fprintf(f, "    }\n");
-  fprintf(f, "    if (k == argc) {\n");
-  fprintf(f, "      AotNumRes num = NH_%u(argc, num_args, depth);\n", id);
-  fprintf(f, "      if (num.ok) {\n");
-  fprintf(f, "        return aot_hot_ok(term_new_num(num.val));\n");
-  fprintf(f, "      }\n");
-  fprintf(f, "    }\n");
+  fprintf(f, "  if (argc > AOT_HOT_ARG_CAP) {\n");
+  fprintf(f, "    Term call = aot_hot_reapply(term_new_ref(%u), argc, args, 0);\n", id);
+  fprintf(f, "    return aot_hot_fail(call);\n");
   fprintf(f, "  }\n");
   fprintf(f, "\n");
   fprintf(f, "  Term env[AOT_HOT_ENV_CAP];\n");
@@ -641,7 +355,6 @@ fn void aot_emit_register(FILE *f) {
     fprintf(f, "  // @%s\n", name);
     fprintf(f, "  AOT_FNS[%u] = F_%u;\n", id, id);
     fprintf(f, "  AOT_HOT_FNS[%u] = FH_%u;\n", id, id);
-    fprintf(f, "  AOT_NUM_FNS[%u] = NH_%u;\n", id, id);
   }
   fprintf(f, "}\n\n");
 }

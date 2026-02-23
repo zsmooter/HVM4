@@ -4,5 +4,5 @@
   _: λ&n. @fib(n - 1) + @fib(n - 2)
 }
 
-@main = @fib(10)
+@main = @fib(34)
 //55

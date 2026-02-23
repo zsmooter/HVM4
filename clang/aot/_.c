@@ -13,7 +13,7 @@
 //   - Registers those symbols in `AOT_FNS[id]` before evaluation.
 // - Fast path:
 //   - Compiled functions partially evaluate WNF for a statically known REF head.
-//   - Covered interactions: APP-LAM, APP-MAT-NUM, APP-MAT-CTR.
+//   - Covered interactions: APP-LAM, APP-MAT-NUM, APP-MAT-CTR, OP2, DUP, APP-REF.
 // - Fallback:
 //   - Any unsupported shape immediately rebuilds an ALO `{subterm | env}` from
 //     the current static location and captured lambda arguments.
@@ -93,15 +93,9 @@ typedef struct {
 } AotHotRes;
 
 typedef AotHotRes (*HvmAotHotFn)(u16 argc, const Term *args, u32 depth);
-typedef struct {
-  u8  ok;
-  u32 val;
-} AotNumRes;
-typedef AotNumRes (*HvmAotNumFn)(u16 argc, const u32 *args, u32 depth);
 
 // Per-definition compiled hot-apply table (BOOK id -> native hot call).
 static HvmAotHotFn AOT_HOT_FNS[BOOK_CAP] = {0};
-static HvmAotNumFn AOT_NUM_FNS[BOOK_CAP] = {0};
 
 // Forward declarations for the recursive hot evaluator.
 fn Term      wnf_op2_num_num_raw(u32 opr, u32 a, u32 b);
@@ -116,30 +110,6 @@ fn AotHotRes aot_hot_ok(Term term) {
 // Constructs a failed hot-eval result with a residual runtime term.
 fn AotHotRes aot_hot_fail(Term term) {
   return (AotHotRes){ .ok = 0, .term = term };
-}
-
-// Constructs a successful numeric result.
-fn AotNumRes aot_num_ok(u32 val) {
-  return (AotNumRes){ .ok = 1, .val = val };
-}
-
-// Constructs a failed numeric result.
-fn AotNumRes aot_num_fail(void) {
-  return (AotNumRes){ .ok = 0, .val = 0 };
-}
-
-// Applies a compiled numeric REF.
-fn AotNumRes aot_num_apply_ref(u16 ref_id, u16 argc, const u32 *args, u32 depth) {
-  if (depth >= AOT_HOT_MAX_DEPTH) {
-    return aot_num_fail();
-  }
-
-  HvmAotNumFn num = AOT_NUM_FNS[ref_id];
-  if (num == NULL) {
-    return aot_num_fail();
-  }
-
-  return num(argc, args, depth);
 }
 
 // Converts current hot environment to an ALO fallback at `loc`.
