@@ -13,6 +13,9 @@ fn void parse_include(PState *s) {
 
   // Resolve path
   char filename[256], path[1024];
+  if (len >= sizeof(filename)) {
+    sys_error("include path exceeds parser buffer (255 chars)");
+  }
   memcpy(filename, s->src + start, len);
   filename[len] = 0;
   sys_path_join(path, sizeof(path), s->file, filename);

@@ -17,6 +17,9 @@ fn Term parse_term_fork(PState *s, int dyn, Term lab_term, u32 lab, u32 depth) {
     parse_match(s, ",");  // optional comma between names
     parse_skip(s);
     if (parse_peek(s) == '{') break;
+    if (n >= 16) {
+      parse_error(s, "at most 16 fork binders", parse_peek(s));
+    }
     names[n++] = parse_name(s);
     parse_skip(s);
   }

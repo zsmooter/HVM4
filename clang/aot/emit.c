@@ -49,6 +49,17 @@ fn void aot_emit_fun_name(char *out, u32 out_cap, const char *name) {
     return;
   }
 
+  // Fail fast on truncation risk: truncated C symbol names can collide.
+  // Reserve 1 byte for NUL terminator.
+  u32 need = 3; // "F_" + at least one body char
+  for (u32 i = 0; name[i] != '\0'; i++) {
+    need += 1;
+  }
+  if (need > out_cap) {
+    fprintf(stderr, "ERROR: AOT function name for '@%s' exceeds emitter limit (%u chars)\n", name, out_cap - 1);
+    exit(1);
+  }
+
   u32 j = 0;
   out[j++] = 'F';
   out[j++] = '_';
