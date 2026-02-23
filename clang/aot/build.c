@@ -6,11 +6,29 @@
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 fn void  aot_emit(const char *c_path, const char *runtime_path, const char *src_path, const char *src_text, const AotBuildCfg *cfg);
 fn void  aot_emit_stdout(const char *runtime_path, const char *src_path, const char *src_text, const AotBuildCfg *cfg);
 fn void  sys_error(const char *msg);
+
+fn double aot_build_now_ms(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0.0;
+  }
+  return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
+}
+
+fn int aot_build_timing_enabled(void) {
+  const char *env = getenv("HVM_AOT_TIMING");
+  return env != NULL && env[0] != '\0' && strcmp(env, "0") != 0;
+}
+
+fn void aot_build_timing_log(const char *phase, double ms) {
+  fprintf(stderr, "AOT_TIMING %s: %.3f ms\n", phase, ms);
+}
 
 // Resolves argv0 to an absolute executable path.
 fn char *aot_build_resolve_argv0(const char *argv0) {
@@ -118,7 +136,7 @@ fn int aot_build_spawn(char *const argv[]) {
 fn int aot_build_compile(const char *c_path, const char *out_path) {
   char *const cmd[] = {
     "clang",
-    "-O3",
+    "-O2",
     "-o",
     (char *)out_path,
     (char *)c_path,
@@ -190,16 +208,39 @@ fn int aot_build_as_c_once(const char *argv0, const char *src_path, const char *
   char tmp_dir[PATH_MAX];
   char c_path[PATH_MAX];
   char x_path[PATH_MAX];
+  int timed = aot_build_timing_enabled();
+  double t0 = timed ? aot_build_now_ms() : 0.0;
+  double tp = t0;
 
   aot_build_temp_dir(tmp_dir, sizeof(tmp_dir));
   aot_build_join(c_path, sizeof(c_path), tmp_dir, "main.c");
   aot_build_join(x_path, sizeof(x_path), tmp_dir, "main.bin");
+  if (timed) {
+    double now = aot_build_now_ms();
+    aot_build_timing_log("prepare", now - tp);
+    tp = now;
+  }
 
   aot_write_c_file(c_path, argv0, src_path, src_text, cfg);
+  if (timed) {
+    double now = aot_build_now_ms();
+    aot_build_timing_log("emit", now - tp);
+    tp = now;
+  }
   rc = aot_build_compile(c_path, x_path);
+  if (timed) {
+    double now = aot_build_now_ms();
+    aot_build_timing_log("clang", now - tp);
+    tp = now;
+  }
   if (rc != 0) {
     fprintf(stderr, "ERROR: failed to compile AOT program '%s'\n", c_path);
     aot_build_cleanup(tmp_dir, c_path, x_path);
+    if (timed) {
+      double now = aot_build_now_ms();
+      aot_build_timing_log("cleanup", now - tp);
+      aot_build_timing_log("total", now - t0);
+    }
     return rc;
   }
 
@@ -209,7 +250,17 @@ fn int aot_build_as_c_once(const char *argv0, const char *src_path, const char *
   };
 
   rc = aot_build_spawn(run);
+  if (timed) {
+    double now = aot_build_now_ms();
+    aot_build_timing_log("run", now - tp);
+    tp = now;
+  }
   aot_build_cleanup(tmp_dir, c_path, x_path);
+  if (timed) {
+    double now = aot_build_now_ms();
+    aot_build_timing_log("cleanup", now - tp);
+    aot_build_timing_log("total", now - t0);
+  }
   return rc;
 }
 
@@ -218,16 +269,39 @@ fn int aot_build_to_output(const char *argv0, const char *src_path, const char *
   int  rc = 1;
   char tmp_dir[PATH_MAX];
   char c_path[PATH_MAX];
+  int timed = aot_build_timing_enabled();
+  double t0 = timed ? aot_build_now_ms() : 0.0;
+  double tp = t0;
 
   aot_build_temp_dir(tmp_dir, sizeof(tmp_dir));
   aot_build_join(c_path, sizeof(c_path), tmp_dir, "main.c");
+  if (timed) {
+    double now = aot_build_now_ms();
+    aot_build_timing_log("prepare", now - tp);
+    tp = now;
+  }
   aot_write_c_file(c_path, argv0, src_path, src_text, cfg);
+  if (timed) {
+    double now = aot_build_now_ms();
+    aot_build_timing_log("emit", now - tp);
+    tp = now;
+  }
 
   rc = aot_build_compile(c_path, out_path);
+  if (timed) {
+    double now = aot_build_now_ms();
+    aot_build_timing_log("clang", now - tp);
+    tp = now;
+  }
   if (rc != 0) {
     fprintf(stderr, "ERROR: failed to compile AOT executable '%s'\n", out_path);
   }
 
   aot_build_cleanup(tmp_dir, c_path, NULL);
+  if (timed) {
+    double now = aot_build_now_ms();
+    aot_build_timing_log("cleanup", now - tp);
+    aot_build_timing_log("total", now - t0);
+  }
   return rc;
 }
