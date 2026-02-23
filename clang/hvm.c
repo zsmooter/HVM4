@@ -379,10 +379,8 @@ static int    PARSE_FORK_SIDE = -1;      // -1 = off, 0 = left branch (DP0), 1 =
 // ===
 
 #include "aot/_.c"
-#include "aot/sanitize.c"
 #include "aot/emit.c"
 #include "aot/build.c"
-#include "aot/try_call.c"
 
 // Parse
 // =====

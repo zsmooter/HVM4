@@ -142,3 +142,61 @@ fn Term aot_call_ref(u16 ref_id, u16 argc, const Term *args) {
 
   return out;
 }
+
+// Dispatch
+// --------
+
+// Tries to execute a compiled function for a REF; returns 0 when absent.
+fn int aot_try_call(u32 id, Term *stack, u32 *s_pos, u32 base, Term *out) {
+  if (STEPS_ITRS_LIM != 0) {
+    return 0;
+  }
+
+  if (id >= BOOK_CAP) {
+    return 0;
+  }
+
+  HvmAotFn fun = AOT_FNS[id];
+  if (fun == NULL) {
+    return 0;
+  }
+
+  *out = fun(stack, s_pos, base);
+  return 1;
+}
+
+// Utils
+// -----
+
+// Converts a symbol name into a filesystem-safe alnum/_ identifier.
+fn char *aot_sanitize(const char *name) {
+  size_t len = strlen(name);
+  size_t cap = (len * 4) + 1;
+  char *out  = malloc(cap);
+  if (out == NULL) {
+    return NULL;
+  }
+
+  size_t j = 0;
+  for (size_t i = 0; i < len; i++) {
+    u8 c = (u8)name[i];
+    if (isalnum(c) || c == '_') {
+      out[j++] = (char)c;
+      continue;
+    }
+
+    if (j + 4 >= cap) {
+      free(out);
+      return NULL;
+    }
+
+    static const char HEX[] = "0123456789ABCDEF";
+    out[j++] = '_';
+    out[j++] = 'x';
+    out[j++] = HEX[(c >> 4) & 0xF];
+    out[j++] = HEX[c & 0xF];
+  }
+
+  out[j] = '\0';
+  return out;
+}
