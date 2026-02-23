@@ -1,4 +1,4 @@
-fn Term term_new_alo(u64 ls_loc, u16 len, u64 tm_loc) {
+fn Term term_new_alo(u64 ls_loc, u32 len, u64 tm_loc) {
   if (len == 0) {
     return term_new(0, ALO, 0, tm_loc);
   }
@@ -7,7 +7,7 @@ fn Term term_new_alo(u64 ls_loc, u16 len, u64 tm_loc) {
   return term_new(0, ALO, len, alo_loc);
 }
 
-fn Term term_new_alo_at(u64 alo_loc, u64 ls_loc, u16 len, u64 tm_loc) {
+fn Term term_new_alo_at(u64 alo_loc, u64 ls_loc, u32 len, u64 tm_loc) {
   if (len == 0) {
     return term_new(0, ALO, 0, tm_loc);
   }

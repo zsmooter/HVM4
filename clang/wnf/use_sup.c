@@ -5,7 +5,7 @@
 fn Term wnf_use_sup(Term use, Term sup) {
   ITRS_INC("USE-SUP");
   u64  use_loc = term_val(use);
-  u16  lab     = term_ext(sup);
+  u32  lab     = term_ext(sup);
   u64  sup_loc = term_val(sup);
   Copy F       = term_clone_at(use_loc, lab);
   Term use0    = term_new_use_at(use_loc, F.k0);

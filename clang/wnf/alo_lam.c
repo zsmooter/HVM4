@@ -2,8 +2,8 @@
 // ------------ ALO-LAM
 // x' ← fresh
 // λx'.@{x',s}f
-fn Term wnf_alo_lam(u64 alo_loc, u64 ls_loc, u16 len, Term book) {
-  u16 lam_ext  = term_ext(book);
+fn Term wnf_alo_lam(u64 alo_loc, u64 ls_loc, u32 len, Term book) {
+  u32 lam_ext  = term_ext(book);
   u64 lam_body = term_val(book);
   u64 bind_loc = heap_alloc(2);
   u64 loc      = (len > 0) ? alo_loc : heap_alloc(1);

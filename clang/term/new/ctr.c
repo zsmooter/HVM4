@@ -1,7 +1,7 @@
-fn Term term_new_ctr_at(u64 loc, u16 nam, u32 ari, Term *args) {
+fn Term term_new_ctr_at(u64 loc, u32 nam, u32 ari, Term *args) {
   return term_new_at(loc, C00 + ari, nam, ari, args);
 }
 
-fn Term term_new_ctr(u16 nam, u32 ari, Term *args) {
+fn Term term_new_ctr(u32 nam, u32 ari, Term *args) {
   return term_new_ctr_at(heap_alloc(ari), nam, ari, args);
 }

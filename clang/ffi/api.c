@@ -6,16 +6,16 @@ fn Term wnf(Term term);
 fn u32 prim_register(const char *name, u32 len, u32 arity, HvmPrimFn fun);
 
 fn Term term_new_num(u32 n);
-fn Term term_new_ctr(u16 name, u32 arity, Term *args);
-fn Term term_new_sup(u16 label, Term a, Term b);
-fn Term term_new_dup(u16 label, Term expr, Term body);
+fn Term term_new_ctr(u32 name, u32 arity, Term *args);
+fn Term term_new_sup(u32 label, Term a, Term b);
+fn Term term_new_dup(u32 label, Term expr, Term body);
 fn Term term_new_app(Term f, Term x);
 fn Term term_new_lam_at(u64 loc, Term body);
 fn Term term_new_lam(Term body);
 fn Term term_new_var(u64 loc);
 
 fn u8  term_tag(Term t);
-fn u16 term_ext(Term t);
+fn u32 term_ext(Term t);
 fn u64 term_val(Term t);
 
 fn Term heap_read(u64 loc);

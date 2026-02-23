@@ -1,7 +1,7 @@
-fn Term term_new_mat_at(u64 loc, u16 nam, Term val, Term nxt) {
+fn Term term_new_mat_at(u64 loc, u32 nam, Term val, Term nxt) {
   return term_new_at(loc, MAT, nam, 2, (Term[]){val, nxt});
 }
 
-fn Term term_new_mat(u16 nam, Term val, Term nxt) {
+fn Term term_new_mat(u32 nam, Term val, Term nxt) {
   return term_new_mat_at(heap_alloc(2), nam, val, nxt);
 }

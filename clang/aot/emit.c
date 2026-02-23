@@ -194,7 +194,7 @@ fn void aot_emit_ret_fallback_loc(FILE *f, u64 loc, u32 dep, const char *pad) {
 }
 
 // Flattens one static APP spine into a REF head + argument locations.
-fn int aot_emit_collect_app_ref(u64 loc, u16 *ref_id, u64 *arg_locs, u16 *arg_len) {
+fn int aot_emit_collect_app_ref(u64 loc, u32 *ref_id, u64 *arg_locs, u16 *arg_len) {
   u64 at = loc;
   u16 len = 0;
 
@@ -225,7 +225,7 @@ fn int aot_emit_collect_app_ref(u64 loc, u16 *ref_id, u64 *arg_locs, u16 *arg_le
 }
 
 // Returns 1 when callee argument 0 is guaranteed strict at entry.
-fn int aot_emit_ref_arg0_strict(u16 ref_id) {
+fn int aot_emit_ref_arg0_strict(u32 ref_id) {
   if (BOOK[ref_id] == 0) {
     return 0;
   }
@@ -418,7 +418,7 @@ fn void aot_emit_node(FILE *f, u64 loc, u32 dep, const char *out, u8 head, const
     }
 
     case OP2: {
-      u16 opr = term_ext(term);
+      u32 opr = term_ext(term);
       u64 arg = term_val(term);
       char lhs[32];
       char rhs[32];
@@ -476,7 +476,7 @@ fn void aot_emit_node(FILE *f, u64 loc, u32 dep, const char *out, u8 head, const
     }
 
     case APP: {
-      u16 ref_id = 0;
+      u32 ref_id = 0;
       u64 arg_locs[AOT_ARG_CAP];
       u16 arg_len = 0;
 

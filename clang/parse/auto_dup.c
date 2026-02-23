@@ -19,7 +19,7 @@
 // - Target is identified by tag + level (and ext for BJ mode).
 // - Outer refs (level > base depth) are shifted by n to account for new dup terms.
 
-fn void auto_dup_go(u64 loc, u32 lvl, u32 base, u32 *use, u32 n, u16 lab, u8 tgt, u16 ext) {
+fn void auto_dup_go(u64 loc, u32 lvl, u32 base, u32 *use, u32 n, u32 lab, u8 tgt, u32 ext) {
   Term t = HEAP[loc];
   u8  tg = term_tag(t);
   u32 vl = term_val(t);
@@ -61,17 +61,17 @@ fn void auto_dup_go(u64 loc, u32 lvl, u32 base, u32 *use, u32 n, u16 lab, u8 tgt
   }
 }
 
-fn Term parse_auto_dup(Term body, u32 lvl, u32 base, u8 tgt, u16 ext, u32 uses) {
+fn Term parse_auto_dup(Term body, u32 lvl, u32 base, u8 tgt, u32 ext, u32 uses) {
   if (uses <= 1) {
     return body;
   }
   u32 n = uses - 1;
   if (PARSE_FRESH_LAB >= PARSE_DYN_LAB || PARSE_FRESH_LAB + n > PARSE_DYN_LAB) {
     fprintf(stderr, "\033[1;31mPARSE_ERROR\033[0m\n");
-    fprintf(stderr, "- out of auto-dup labels in 16-bit space\n");
+    fprintf(stderr, "- out of auto-dup labels in 18-bit space\n");
     exit(1);
   }
-  u16 lab = (u16)PARSE_FRESH_LAB;
+  u32 lab = PARSE_FRESH_LAB;
   PARSE_FRESH_LAB += n;
 
   // Walk body's children

@@ -31,9 +31,9 @@ typedef struct {
 
   // constructors
   Term (*term_new_num)(u32 n);
-  Term (*term_new_ctr)(u16 name, u32 arity, Term *args);
-  Term (*term_new_sup)(u16 label, Term a, Term b);
-  Term (*term_new_dup)(u16 label, Term expr, Term body);
+  Term (*term_new_ctr)(u32 name, u32 arity, Term *args);
+  Term (*term_new_sup)(u32 label, Term a, Term b);
+  Term (*term_new_dup)(u32 label, Term expr, Term body);
   Term (*term_new_app)(Term f, Term x);
   Term (*term_new_lam_at)(u64 loc, Term body);
   Term (*term_new_lam)(Term body);
@@ -41,7 +41,7 @@ typedef struct {
 
   // accessors
   u8   (*term_tag)(Term t);
-  u16  (*term_ext)(Term t);
+  u32  (*term_ext)(Term t);
   u64  (*term_val)(Term t);
 
   // heap
@@ -107,7 +107,7 @@ typedef struct {
 #define PRI 45
 
 // LAM Ext Flags
-#define LAM_ERA_MASK 0x8000
+#define LAM_ERA_MASK 0x20000
 #endif
 
 #ifdef __cplusplus

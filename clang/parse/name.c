@@ -14,9 +14,9 @@ fn u32 parse_name(PState *s) {
   return id;
 }
 
-// Parses a name as a 16-bit base64 number.
+// Parses a name as a 18-bit base64 number.
 // Used for NAM (stuck names) and static labels that must stay numeric.
-fn u16 parse_name_num(PState *s) {
+fn u32 parse_name_num(PState *s) {
   parse_skip(s);
   char c = parse_peek(s);
   if (!nick_is_init(c)) {
@@ -30,13 +30,13 @@ fn u16 parse_name_num(PState *s) {
       fprintf(stderr, "\033[1;31mPARSE_ERROR\033[0m (%s:%d:%d)\n", s->file, s->line, s->col);
       fprintf(stderr, "- base64 name '");
       print_name(stderr, k);
-      fprintf(stderr, "' exceeds 16-bit limit (max 0x%04X)\n", (u16)EXT_MASK);
+      fprintf(stderr, "' exceeds 18-bit limit (max 0x%05X)\n", EXT_MASK);
       exit(1);
     }
     parse_advance(s);
   }
   parse_skip(s);
-  return (u16)k;
+  return (u32)k;
 }
 
 // Like parse_name, but returns a unique ID from the global table.

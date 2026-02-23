@@ -155,7 +155,7 @@ fn Term parse_term_lam(PState *s, u32 depth) {
     parse_skip(s);
     int  dyn      = parse_peek(s) == '(';
     Term lab_term = 0;
-    u16  lab      = 0;
+    u32  lab      = 0;
     if (dyn) {
       parse_consume(s, "(");
       lab_term = parse_term(s, depth + 1);  // +1 because we're inside the outer lambda
@@ -164,7 +164,7 @@ fn Term parse_term_lam(PState *s, u32 depth) {
       char c = parse_peek(s);
       if (c == ',' || c == '.') {
         if (PARSE_FRESH_LAB >= PARSE_DYN_LAB) {
-          parse_error(s, "available auto-dup label (< 0xFFFF)", parse_peek(s));
+          parse_error(s, "available auto-dup label (< 0x3FFFF)", parse_peek(s));
         }
         lab = PARSE_FRESH_LAB++;
       } else {

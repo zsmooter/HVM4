@@ -134,7 +134,7 @@ __attribute__((hot)) fn Term wnf(Term term) {
       }
 
       case REF: {
-        u16 nam = term_ext(next);
+        u32 nam = term_ext(next);
         Term aot_out;
         if (aot_try_call(nam, stack, &s_pos, base, &aot_out)) {
           next = aot_out;
@@ -155,7 +155,7 @@ __attribute__((hot)) fn Term wnf(Term term) {
       }
 
       case ALO: {
-        u16 len     = term_ext(next);
+        u32 len     = term_ext(next);
         u64 alo_loc;
         u64 tm_loc;
         u64 ls_loc;

@@ -24,11 +24,32 @@ FFI_DIR="$DIR/ffi"
 # Config
 # ------
 
-# Accepts no CLI arguments; runs both modes unconditionally.
-if [ $# -ne 0 ]; then
-  echo "error: scripts/test.sh takes no arguments" >&2
-  exit 1
-fi
+# CLI options
+# -----------
+interpreted_only=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i|--interpreted-only)
+      interpreted_only=1
+      ;;
+    -h|--help)
+      cat <<'EOF'
+usage: scripts/test.sh [--interpreted-only|-i]
+
+Options:
+  -i, --interpreted-only   Run interpreted tests only (skip AOT tests)
+  -h, --help               Show this help message
+EOF
+      exit 0
+      ;;
+    *)
+      echo "error: unknown option: $1" >&2
+      echo "run scripts/test.sh --help for usage" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
 
 TEST_TIMEOUT_INTERPRETED_SECS=2
 TEST_TIMEOUT_COMPILED_SECS=20
@@ -319,13 +340,15 @@ if [ $? -ne 0 ]; then
   status=1
 fi
 
-if [ -n "${HVM_TEST_FLAGS:-}" ]; then
-  run_tests "$C_BIN" "HVM (AOT)" "$TEST_TIMEOUT_COMPILED_SECS" "${shared_flags[@]}" "--as-c"
-else
-  run_tests "$C_BIN" "HVM (AOT)" "$TEST_TIMEOUT_COMPILED_SECS" "--as-c"
-fi
-if [ $? -ne 0 ]; then
-  status=1
+if [ "$interpreted_only" -eq 0 ]; then
+  if [ -n "${HVM_TEST_FLAGS:-}" ]; then
+    run_tests "$C_BIN" "HVM (AOT)" "$TEST_TIMEOUT_COMPILED_SECS" "${shared_flags[@]}" "--as-c"
+  else
+    run_tests "$C_BIN" "HVM (AOT)" "$TEST_TIMEOUT_COMPILED_SECS" "--as-c"
+  fi
+  if [ $? -ne 0 ]; then
+    status=1
+  fi
 fi
 
 if [ $status -eq 0 ]; then

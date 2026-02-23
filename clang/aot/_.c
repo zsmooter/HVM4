@@ -102,7 +102,7 @@ fn u32 aot_call_depth(void) {
 }
 
 // Calls one compiled ref if available, else returns residual REF application.
-fn Term aot_call_ref(u16 ref_id, u16 argc, const Term *args) {
+fn Term aot_call_ref(u32 ref_id, u16 argc, const Term *args) {
   if (argc > AOT_ARG_CAP) {
     return aot_reapply(term_new_ref(ref_id), argc, args, 0);
   }

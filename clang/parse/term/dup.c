@@ -118,10 +118,10 @@ fn Term parse_term_dup(PState *s, u32 depth) {
     return term_new_ddu(lab_term, val, lam0);
   }
   // Static label (or auto if next is =)
-  u16 lab;
+  u32 lab;
   if (parse_peek(s) == '=') {
     if (PARSE_FRESH_LAB >= PARSE_DYN_LAB) {
-      parse_error(s, "available auto-dup label (< 0xFFFF)", parse_peek(s));
+      parse_error(s, "available auto-dup label (< 0x3FFFF)", parse_peek(s));
     }
     lab = PARSE_FRESH_LAB++;
   } else {

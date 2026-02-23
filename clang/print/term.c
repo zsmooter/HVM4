@@ -569,7 +569,7 @@ fn void print_term_go(FILE *f, Term term, u32 depth, PrintState *st) {
     }
     case ALO: {
       // ALO prints as @{book_term}, applying ALO substitutions to book vars.
-      u16 len     = term_ext(term);
+      u32 len     = term_ext(term);
       u64 tm_loc;
       u64 ls_loc;
       if (len == 0) {
