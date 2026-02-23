@@ -238,12 +238,10 @@ fn int aot_emit_ref_arg0_strict(u16 ref_id) {
 // Emit Core
 // ---------
 
-// Forward declarations for recursive emitters.
-fn void aot_emit_eval(FILE *f, u64 loc, u32 dep, const char *out, const char *pad, u32 *tmp);
-fn void aot_emit_apply(FILE *f, u64 loc, u32 dep, const char *pad, u32 *tmp);
-
-// Emits one expression evaluator into local `Term <out>`.
-fn void aot_emit_eval(FILE *f, u64 loc, u32 dep, const char *out, const char *pad, u32 *tmp) {
+// Emits one recursive node.
+// - `head=1`: consumes APP frames from `stack/*s_pos` and returns from F_<def>.
+// - `head=0`: evaluates one expression into local `Term <out>`.
+fn void aot_emit_node(FILE *f, u64 loc, u32 dep, const char *out, u8 head, const char *pad, u32 *tmp) {
   Term term = heap_read(loc);
   u8   tag  = term_tag(term);
 
@@ -255,6 +253,139 @@ fn void aot_emit_eval(FILE *f, u64 loc, u32 dep, const char *out, const char *pa
   aot_emit_pad_next(pad3, sizeof(pad3), pad2);
 
   aot_emit_wnf_comment(f, loc, pad);
+
+  if (head) {
+    switch (tag) {
+      case LAM: {
+        if (dep >= AOT_ENV_CAP) {
+          aot_emit_ret_fallback_loc(f, loc, dep, pad);
+          return;
+        }
+
+        char frm[32];
+        char app[32];
+        aot_emit_tmp(frm, sizeof(frm), "frm", tmp);
+        aot_emit_tmp(app, sizeof(app), "app", tmp);
+
+        fprintf(f, "%sif (*s_pos <= base) {\n", pad);
+        aot_emit_ret_fallback_loc(f, loc, dep, pad1);
+        fprintf(f, "%s}\n", pad);
+        fprintf(f, "%sTerm %s = stack[*s_pos - 1];\n", pad, frm);
+        fprintf(f, "%sif (term_tag(%s) != APP) {\n", pad, frm);
+        aot_emit_ret_fallback_loc(f, loc, dep, pad1);
+        fprintf(f, "%s}\n", pad);
+        fprintf(f, "%s(*s_pos)--;\n", pad);
+        fprintf(f, "%su64 %s = term_val(%s);\n", pad, app, frm);
+        fprintf(f, "%sTerm x%u = heap_read(%s + 1);\n", pad, dep, app);
+        aot_emit_itrs_inc(f, pad);
+        aot_emit_node(f, term_val(term), dep + 1, out, 1, pad, tmp);
+        return;
+      }
+
+      case SWI: {
+        u64 mat_loc = term_val(term);
+        char frm[32];
+        char app[32];
+        char arg[32];
+        aot_emit_tmp(frm, sizeof(frm), "frm", tmp);
+        aot_emit_tmp(app, sizeof(app), "app", tmp);
+        aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
+
+        fprintf(f, "%sif (*s_pos <= base) {\n", pad);
+        aot_emit_ret_fallback_loc(f, loc, dep, pad1);
+        fprintf(f, "%s}\n", pad);
+        fprintf(f, "%sTerm %s = stack[*s_pos - 1];\n", pad, frm);
+        fprintf(f, "%sif (term_tag(%s) != APP) {\n", pad, frm);
+        aot_emit_ret_fallback_loc(f, loc, dep, pad1);
+        fprintf(f, "%s}\n", pad);
+        fprintf(f, "%su64 %s = term_val(%s);\n", pad, app, frm);
+        fprintf(f, "%sTerm %s = heap_read(%s + 1);\n", pad, arg, app);
+        fprintf(f, "%sif (term_tag(%s) != NUM) {\n", pad, arg);
+        aot_emit_ret_fallback_loc(f, loc, dep, pad1);
+        fprintf(f, "%s}\n", pad);
+        fprintf(f, "%sif (term_val(%s) == %uULL) {\n", pad, arg, term_ext(term));
+        fprintf(f, "%s(*s_pos)--;\n", pad1);
+        aot_emit_itrs_inc(f, pad1);
+        aot_emit_node(f, mat_loc + 0, dep, out, 1, pad1, tmp);
+        fprintf(f, "%s} else {\n", pad);
+        aot_emit_itrs_inc(f, pad1);
+        aot_emit_node(f, mat_loc + 1, dep, out, 1, pad1, tmp);
+        fprintf(f, "%s}\n", pad);
+        return;
+      }
+
+      case MAT: {
+        u64 mat_loc = term_val(term);
+        char frm[32];
+        char app[32];
+        char arg[32];
+        char tag_n[32];
+        char ari[32];
+        char ctr[32];
+        char fld[32];
+        char cell[32];
+        aot_emit_tmp(frm, sizeof(frm), "frm", tmp);
+        aot_emit_tmp(app, sizeof(app), "app", tmp);
+        aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
+        aot_emit_tmp(tag_n, sizeof(tag_n), "tag", tmp);
+        aot_emit_tmp(ari, sizeof(ari), "ari", tmp);
+        aot_emit_tmp(ctr, sizeof(ctr), "ctr", tmp);
+        aot_emit_tmp(fld, sizeof(fld), "fld", tmp);
+        aot_emit_tmp(cell, sizeof(cell), "cell", tmp);
+
+        fprintf(f, "%sif (*s_pos <= base) {\n", pad);
+        aot_emit_ret_fallback_loc(f, loc, dep, pad1);
+        fprintf(f, "%s}\n", pad);
+        fprintf(f, "%sTerm %s = stack[*s_pos - 1];\n", pad, frm);
+        fprintf(f, "%sif (term_tag(%s) != APP) {\n", pad, frm);
+        aot_emit_ret_fallback_loc(f, loc, dep, pad1);
+        fprintf(f, "%s}\n", pad);
+        fprintf(f, "%su64 %s = term_val(%s);\n", pad, app, frm);
+        fprintf(f, "%sTerm %s = heap_read(%s + 1);\n", pad, arg, app);
+        fprintf(f, "%su8 %s = term_tag(%s);\n", pad, tag_n, arg);
+        fprintf(f, "%sif (%s < C00 || %s > C16) {\n", pad, tag_n, tag_n);
+        aot_emit_ret_fallback_loc(f, loc, dep, pad1);
+        fprintf(f, "%s}\n", pad);
+        fprintf(f, "%sif (term_ext(%s) == %u) {\n", pad, arg, term_ext(term));
+        fprintf(f, "%s(*s_pos)--;\n", pad1);
+        aot_emit_itrs_inc(f, pad1);
+        fprintf(f, "%su32 %s = (u32)(%s - C00);\n", pad1, ari, tag_n);
+        fprintf(f, "%su64 %s = term_val(%s);\n", pad1, ctr, arg);
+        fprintf(f, "%sfor (u32 j = %s; j > 0; j--) {\n", pad1, ari);
+        fprintf(f, "%s  Term %s = heap_read(%s + (u64)(j - 1));\n", pad1, fld, ctr);
+        fprintf(f, "%s  u64 %s = heap_alloc(2);\n", pad1, cell);
+        fprintf(f, "%s  heap_set(%s + 0, term_new_era());\n", pad1, cell);
+        fprintf(f, "%s  heap_set(%s + 1, %s);\n", pad1, cell, fld);
+        fprintf(f, "%s  stack[*s_pos] = term_new(0, APP, 0, %s);\n", pad1, cell);
+        fprintf(f, "%s  (*s_pos)++;\n", pad1);
+        fprintf(f, "%s}\n", pad1);
+        aot_emit_node(f, mat_loc + 0, dep, out, 1, pad1, tmp);
+        fprintf(f, "%s} else {\n", pad);
+        aot_emit_itrs_inc(f, pad1);
+        aot_emit_node(f, mat_loc + 1, dep, out, 1, pad1, tmp);
+        fprintf(f, "%s}\n", pad);
+        return;
+      }
+
+      default: {
+        char frm[32];
+        char out_n[32];
+        aot_emit_tmp(frm, sizeof(frm), "frm", tmp);
+        aot_emit_tmp(out_n, sizeof(out_n), "out", tmp);
+
+        fprintf(f, "%sif (*s_pos > base) {\n", pad);
+        fprintf(f, "%sTerm %s = stack[*s_pos - 1];\n", pad1, frm);
+        fprintf(f, "%sif (term_tag(%s) == APP) {\n", pad1, frm);
+        aot_emit_ret_fallback_loc(f, loc, dep, pad2);
+        fprintf(f, "%s}\n", pad1);
+        fprintf(f, "%s}\n", pad);
+
+        aot_emit_node(f, loc, dep, out_n, 0, pad, tmp);
+        fprintf(f, "%sreturn %s;\n", pad, out_n);
+        return;
+      }
+    }
+  }
 
   switch (tag) {
     case NUM:
@@ -296,13 +427,13 @@ fn void aot_emit_eval(FILE *f, u64 loc, u32 dep, const char *out, const char *pa
 
       fprintf(f, "%sTerm %s;\n", pad, out);
       fprintf(f, "%s{\n", pad);
-      aot_emit_eval(f, arg + 0, dep, lhs, pad1, tmp);
+      aot_emit_node(f, arg + 0, dep, lhs, 0, pad1, tmp);
       fprintf(f, "%sif (term_tag(%s) != NUM) {\n", pad1, lhs);
       fprintf(f, "%s%s = term_new_op2(%u, %s, ", pad2, out, opr, lhs);
       aot_emit_alo_expr(f, arg + 1, dep);
       fprintf(f, ");\n");
       fprintf(f, "%s} else {\n", pad1);
-      aot_emit_eval(f, arg + 1, dep, rhs, pad2, tmp);
+      aot_emit_node(f, arg + 1, dep, rhs, 0, pad2, tmp);
       fprintf(f, "%sif (term_tag(%s) != NUM) {\n", pad2, rhs);
       fprintf(f, "%s%s = term_new_op2(%u, %s, %s);\n", pad3, out, opr, lhs, rhs);
       fprintf(f, "%s} else {\n", pad2);
@@ -329,7 +460,7 @@ fn void aot_emit_eval(FILE *f, u64 loc, u32 dep, const char *out, const char *pa
 
       fprintf(f, "%sTerm %s;\n", pad, out);
       fprintf(f, "%s{\n", pad);
-      aot_emit_eval(f, dup_loc + 0, dep, val, pad1, tmp);
+      aot_emit_node(f, dup_loc + 0, dep, val, 0, pad1, tmp);
       fprintf(f, "%sif (!aot_is_copy_free(%s)) {\n", pad1, val);
       fprintf(f, "%s%s = ", pad2, out);
       aot_emit_alo_expr(f, loc, dep);
@@ -337,7 +468,7 @@ fn void aot_emit_eval(FILE *f, u64 loc, u32 dep, const char *out, const char *pa
       fprintf(f, "%s} else {\n", pad1);
       fprintf(f, "%sTerm x%u = %s;\n", pad2, dep, val);
       aot_emit_itrs_inc(f, pad2);
-      aot_emit_eval(f, dup_loc + 1, dep + 1, bod, pad2, tmp);
+      aot_emit_node(f, dup_loc + 1, dep + 1, bod, 0, pad2, tmp);
       fprintf(f, "%s%s = %s;\n", pad2, out, bod);
       fprintf(f, "%s}\n", pad1);
       fprintf(f, "%s}\n", pad);
@@ -371,7 +502,7 @@ fn void aot_emit_eval(FILE *f, u64 loc, u32 dep, const char *out, const char *pa
       if (strict0) {
         char arg0[32];
         aot_emit_tmp(arg0, sizeof(arg0), "arg", tmp);
-        aot_emit_eval(f, arg_locs[arg_len - 1], dep, arg0, pad, tmp);
+        aot_emit_node(f, arg_locs[arg_len - 1], dep, arg0, 0, pad, tmp);
         fprintf(f, "%s%s[0] = %s;\n", pad, call_args, arg0);
         beg = 1;
       }
@@ -391,152 +522,6 @@ fn void aot_emit_eval(FILE *f, u64 loc, u32 dep, const char *out, const char *pa
       fprintf(f, "%sTerm %s = ", pad, out);
       aot_emit_alo_expr(f, loc, dep);
       fprintf(f, ";\n");
-      return;
-    }
-  }
-}
-
-// Emits one application evaluator that returns from compiled `F_<def>`.
-fn void aot_emit_apply(FILE *f, u64 loc, u32 dep, const char *pad, u32 *tmp) {
-  Term term = heap_read(loc);
-  u8   tag  = term_tag(term);
-
-  char pad1[128];
-  char pad2[128];
-  char pad3[128];
-  aot_emit_pad_next(pad1, sizeof(pad1), pad);
-  aot_emit_pad_next(pad2, sizeof(pad2), pad1);
-  aot_emit_pad_next(pad3, sizeof(pad3), pad2);
-
-  aot_emit_wnf_comment(f, loc, pad);
-
-  switch (tag) {
-    case LAM: {
-      if (dep >= AOT_ENV_CAP) {
-        aot_emit_ret_fallback_loc(f, loc, dep, pad);
-        return;
-      }
-
-      char frm[32];
-      char app[32];
-      aot_emit_tmp(frm, sizeof(frm), "frm", tmp);
-      aot_emit_tmp(app, sizeof(app), "app", tmp);
-
-      fprintf(f, "%sif (*s_pos <= base) {\n", pad);
-      aot_emit_ret_fallback_loc(f, loc, dep, pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%sTerm %s = stack[*s_pos - 1];\n", pad, frm);
-      fprintf(f, "%sif (term_tag(%s) != APP) {\n", pad, frm);
-      aot_emit_ret_fallback_loc(f, loc, dep, pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%s(*s_pos)--;\n", pad);
-      fprintf(f, "%su64 %s = term_val(%s);\n", pad, app, frm);
-      fprintf(f, "%sTerm x%u = heap_read(%s + 1);\n", pad, dep, app);
-      aot_emit_itrs_inc(f, pad);
-      aot_emit_apply(f, term_val(term), dep + 1, pad, tmp);
-      return;
-    }
-
-    case SWI: {
-      u64 mat_loc = term_val(term);
-      char frm[32];
-      char app[32];
-      char arg[32];
-      aot_emit_tmp(frm, sizeof(frm), "frm", tmp);
-      aot_emit_tmp(app, sizeof(app), "app", tmp);
-      aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
-
-      fprintf(f, "%sif (*s_pos <= base) {\n", pad);
-      aot_emit_ret_fallback_loc(f, loc, dep, pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%sTerm %s = stack[*s_pos - 1];\n", pad, frm);
-      fprintf(f, "%sif (term_tag(%s) != APP) {\n", pad, frm);
-      aot_emit_ret_fallback_loc(f, loc, dep, pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%su64 %s = term_val(%s);\n", pad, app, frm);
-      fprintf(f, "%sTerm %s = heap_read(%s + 1);\n", pad, arg, app);
-      fprintf(f, "%sif (term_tag(%s) != NUM) {\n", pad, arg);
-      aot_emit_ret_fallback_loc(f, loc, dep, pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%sif (term_val(%s) == %uULL) {\n", pad, arg, term_ext(term));
-      fprintf(f, "%s(*s_pos)--;\n", pad1);
-      aot_emit_itrs_inc(f, pad1);
-      aot_emit_apply(f, mat_loc + 0, dep, pad1, tmp);
-      fprintf(f, "%s} else {\n", pad);
-      aot_emit_itrs_inc(f, pad1);
-      aot_emit_apply(f, mat_loc + 1, dep, pad1, tmp);
-      fprintf(f, "%s}\n", pad);
-      return;
-    }
-
-    case MAT: {
-      u64 mat_loc = term_val(term);
-      char frm[32];
-      char app[32];
-      char arg[32];
-      char tag_n[32];
-      char ari[32];
-      char ctr[32];
-      char fld[32];
-      char cell[32];
-      aot_emit_tmp(frm, sizeof(frm), "frm", tmp);
-      aot_emit_tmp(app, sizeof(app), "app", tmp);
-      aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
-      aot_emit_tmp(tag_n, sizeof(tag_n), "tag", tmp);
-      aot_emit_tmp(ari, sizeof(ari), "ari", tmp);
-      aot_emit_tmp(ctr, sizeof(ctr), "ctr", tmp);
-      aot_emit_tmp(fld, sizeof(fld), "fld", tmp);
-      aot_emit_tmp(cell, sizeof(cell), "cell", tmp);
-
-      fprintf(f, "%sif (*s_pos <= base) {\n", pad);
-      aot_emit_ret_fallback_loc(f, loc, dep, pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%sTerm %s = stack[*s_pos - 1];\n", pad, frm);
-      fprintf(f, "%sif (term_tag(%s) != APP) {\n", pad, frm);
-      aot_emit_ret_fallback_loc(f, loc, dep, pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%su64 %s = term_val(%s);\n", pad, app, frm);
-      fprintf(f, "%sTerm %s = heap_read(%s + 1);\n", pad, arg, app);
-      fprintf(f, "%su8 %s = term_tag(%s);\n", pad, tag_n, arg);
-      fprintf(f, "%sif (%s < C00 || %s > C16) {\n", pad, tag_n, tag_n);
-      aot_emit_ret_fallback_loc(f, loc, dep, pad1);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%sif (term_ext(%s) == %u) {\n", pad, arg, term_ext(term));
-      fprintf(f, "%s(*s_pos)--;\n", pad1);
-      aot_emit_itrs_inc(f, pad1);
-      fprintf(f, "%su32 %s = (u32)(%s - C00);\n", pad1, ari, tag_n);
-      fprintf(f, "%su64 %s = term_val(%s);\n", pad1, ctr, arg);
-      fprintf(f, "%sfor (u32 j = %s; j > 0; j--) {\n", pad1, ari);
-      fprintf(f, "%s  Term %s = heap_read(%s + (u64)(j - 1));\n", pad1, fld, ctr);
-      fprintf(f, "%s  u64 %s = heap_alloc(2);\n", pad1, cell);
-      fprintf(f, "%s  heap_set(%s + 0, term_new_era());\n", pad1, cell);
-      fprintf(f, "%s  heap_set(%s + 1, %s);\n", pad1, cell, fld);
-      fprintf(f, "%s  stack[*s_pos] = term_new(0, APP, 0, %s);\n", pad1, cell);
-      fprintf(f, "%s  (*s_pos)++;\n", pad1);
-      fprintf(f, "%s}\n", pad1);
-      aot_emit_apply(f, mat_loc + 0, dep, pad1, tmp);
-      fprintf(f, "%s} else {\n", pad);
-      aot_emit_itrs_inc(f, pad1);
-      aot_emit_apply(f, mat_loc + 1, dep, pad1, tmp);
-      fprintf(f, "%s}\n", pad);
-      return;
-    }
-
-    default: {
-      char frm[32];
-      aot_emit_tmp(frm, sizeof(frm), "frm", tmp);
-
-      fprintf(f, "%sif (*s_pos > base) {\n", pad);
-      fprintf(f, "%sTerm %s = stack[*s_pos - 1];\n", pad1, frm);
-      fprintf(f, "%sif (term_tag(%s) == APP) {\n", pad1, frm);
-      aot_emit_ret_fallback_loc(f, loc, dep, pad2);
-      fprintf(f, "%s}\n", pad1);
-      fprintf(f, "%s}\n", pad);
-
-      char out[32];
-      aot_emit_tmp(out, sizeof(out), "out", tmp);
-      aot_emit_eval(f, loc, dep, out, pad, tmp);
-      fprintf(f, "%sreturn %s;\n", pad, out);
       return;
     }
   }
@@ -568,7 +553,7 @@ fn void aot_emit_def(FILE *f, u32 id) {
   fprintf(f, "\n");
   {
     u32 tmp = 0;
-    aot_emit_apply(f, root, 0, "  ", &tmp);
+    aot_emit_node(f, root, 0, NULL, 1, "  ", &tmp);
   }
   fprintf(f, "}\n\n");
 }
