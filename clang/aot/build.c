@@ -199,20 +199,14 @@ fn void aot_build_ensure_dir_tree(const char *path) {
   }
 }
 
-// Reads one temp root from HVM_TMPDIR, HOME/.hvm/tmp, or /tmp/hvm4.
+// Reads one temp root from HVM_TMPDIR, TMPDIR, or /tmp.
 fn void aot_build_temp_root(char *out, u32 out_len) {
   const char *tmp = getenv("HVM_TMPDIR");
   if (tmp == NULL || tmp[0] == '\0') {
-    const char *home = getenv("HOME");
-    if (home != NULL && home[0] != '\0') {
-      int n = snprintf(out, out_len, "%s/.hvm/tmp", home);
-      if (n < 0 || n >= (int)out_len) {
-        sys_error("AOT temp root path too long");
-      }
-      aot_build_ensure_dir_tree(out);
-      return;
+    tmp = getenv("TMPDIR");
+    if (tmp == NULL || tmp[0] == '\0') {
+      tmp = "/tmp";
     }
-    tmp = "/tmp/hvm4";
   }
 
   int n = snprintf(out, out_len, "%s", tmp);

@@ -53,7 +53,7 @@ done
 
 TEST_TIMEOUT_INTERPRETED_SECS=2
 TEST_TIMEOUT_COMPILED_SECS=20
-HVM_TMP_DIR="/tmp/hvm4"
+HVM_TMP_DIR="${TMPDIR:-/tmp}"
 shared_flags=()
 
 # Allow env overrides
@@ -63,9 +63,6 @@ if [ -n "${HVM_TEST_TIMEOUT_SECS:-}" ]; then
 fi
 if [ -n "${HVM_TEST_FLAGS:-}" ]; then
   read -r -a shared_flags <<< "$HVM_TEST_FLAGS"
-fi
-if [ -n "${HOME:-}" ]; then
-  HVM_TMP_DIR="$HOME/.hvm/tmp"
 fi
 if [ -n "${HVM_TMPDIR:-}" ]; then
   HVM_TMP_DIR="$HVM_TMPDIR"

@@ -15,11 +15,7 @@ BENCH_REPO="https://github.com/HigherOrderCO/bench.git"
 TIMEOUT=${TIMEOUT:-10}
 THREADS=(1 2 4 8 12)
 SHOW_IPS=0
-HVM_TMP_DIR="/tmp/hvm4"
-
-if [ -n "${HOME:-}" ]; then
-  HVM_TMP_DIR="$HOME/.hvm/tmp"
-fi
+HVM_TMP_DIR="${TMPDIR:-/tmp}"
 if [ -n "${HVM_TMPDIR:-}" ]; then
   HVM_TMP_DIR="$HVM_TMPDIR"
 fi
