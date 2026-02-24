@@ -101,44 +101,20 @@ fn u32 aot_call_depth(void) {
   return AOT_CALL_DEPTH;
 }
 
-// Calls one compiled ref if available, else returns residual REF application.
-fn Term aot_call_ref(u32 ref_id, u16 argc, const Term *args) {
-  if (argc > AOT_ARG_CAP) {
-    return aot_reapply(term_new_ref(ref_id), argc, args, 0);
-  }
-
+// Calls one compiled ref using current stack slice, else returns residual REF application.
+fn Term aot_call_ref(u32 ref_id, Term *stack, u32 *s_pos, u32 base) {
   if (AOT_CALL_DEPTH >= AOT_MAX_DEPTH) {
-    return aot_reapply(term_new_ref(ref_id), argc, args, 0);
+    return term_new_ref(ref_id);
   }
 
   HvmAotFn fun = AOT_FNS[ref_id];
   if (fun == NULL) {
-    return aot_reapply(term_new_ref(ref_id), argc, args, 0);
-  }
-
-  Term stack[AOT_ARG_CAP];
-  u32  s_pos = argc;
-
-  for (u16 i = 0; i < argc; i++) {
-    u64 app_loc = heap_alloc(2);
-    heap_set(app_loc + 0, term_new_era());
-    heap_set(app_loc + 1, args[i]);
-    stack[argc - 1 - i] = term_new(0, APP, 0, app_loc);
+    return term_new_ref(ref_id);
   }
 
   AOT_CALL_DEPTH++;
-  Term out = fun(stack, &s_pos, 0);
+  Term out = fun(stack, s_pos, base);
   AOT_CALL_DEPTH--;
-
-  while (s_pos > 0) {
-    Term frame = stack[--s_pos];
-    if (term_tag(frame) != APP) {
-      continue;
-    }
-    u64 app_loc = term_val(frame);
-    Term arg = heap_read(app_loc + 1);
-    out = term_new_app(out, arg);
-  }
 
   return out;
 }
