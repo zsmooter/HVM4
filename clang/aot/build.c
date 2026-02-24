@@ -233,16 +233,6 @@ fn void aot_build_temp_path(char *out, u32 out_len, const char *name) {
   }
 }
 
-// Removes temporary AOT files.
-fn void aot_build_cleanup(const char *c_path, const char *x_path) {
-  if (x_path != NULL && x_path[0] != '\0') {
-    unlink(x_path);
-  }
-  if (c_path != NULL && c_path[0] != '\0') {
-    unlink(c_path);
-  }
-}
-
 // Emits only C code to stdout.
 fn void aot_build_to_c(const char *argv0, const char *src_path, const char *src_text, const AotBuildCfg *cfg) {
   char runtime_path[PATH_MAX];
@@ -250,7 +240,7 @@ fn void aot_build_to_c(const char *argv0, const char *src_path, const char *src_
   aot_emit_stdout(runtime_path, src_path, src_text, cfg);
 }
 
-// Emits + compiles + runs once, then removes all temporary files.
+// Emits + compiles + runs once, keeping deterministic temp artifacts.
 fn int aot_build_as_c_once(const char *argv0, const char *src_path, const char *src_text, const AotBuildCfg *cfg) {
   int  rc = 1;
   char c_path[PATH_MAX];
@@ -281,10 +271,8 @@ fn int aot_build_as_c_once(const char *argv0, const char *src_path, const char *
   }
   if (rc != 0) {
     fprintf(stderr, "ERROR: failed to compile AOT program '%s'\n", c_path);
-    aot_build_cleanup(c_path, x_path);
     if (timed) {
       double now = aot_build_now_ms();
-      aot_build_timing_log("cleanup", now - tp);
       aot_build_timing_log("total", now - t0);
     }
     return rc;
@@ -299,18 +287,12 @@ fn int aot_build_as_c_once(const char *argv0, const char *src_path, const char *
   if (timed) {
     double now = aot_build_now_ms();
     aot_build_timing_log("run", now - tp);
-    tp = now;
-  }
-  aot_build_cleanup(c_path, x_path);
-  if (timed) {
-    double now = aot_build_now_ms();
-    aot_build_timing_log("cleanup", now - tp);
     aot_build_timing_log("total", now - t0);
   }
   return rc;
 }
 
-// Emits + compiles a native executable to `out_path`.
+// Emits + compiles a native executable to `out_path`, keeping temp C.
 fn int aot_build_to_output(const char *argv0, const char *src_path, const char *src_text, const char *out_path, const AotBuildCfg *cfg) {
   int  rc = 1;
   char c_path[PATH_MAX];
@@ -341,10 +323,8 @@ fn int aot_build_to_output(const char *argv0, const char *src_path, const char *
     fprintf(stderr, "ERROR: failed to compile AOT executable '%s'\n", out_path);
   }
 
-  aot_build_cleanup(c_path, NULL);
   if (timed) {
     double now = aot_build_now_ms();
-    aot_build_timing_log("cleanup", now - tp);
     aot_build_timing_log("total", now - t0);
   }
   return rc;
