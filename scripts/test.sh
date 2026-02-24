@@ -53,6 +53,7 @@ done
 
 TEST_TIMEOUT_INTERPRETED_SECS=2
 TEST_TIMEOUT_COMPILED_SECS=20
+HVM_TMP_DIR="/tmp/hvm4"
 shared_flags=()
 
 # Allow env overrides
@@ -63,6 +64,16 @@ fi
 if [ -n "${HVM_TEST_FLAGS:-}" ]; then
   read -r -a shared_flags <<< "$HVM_TEST_FLAGS"
 fi
+if [ -n "${HOME:-}" ]; then
+  HVM_TMP_DIR="$HOME/.hvm/tmp"
+fi
+if [ -n "${HVM_TMPDIR:-}" ]; then
+  HVM_TMP_DIR="$HVM_TMPDIR"
+fi
+if ! mkdir -p "$HVM_TMP_DIR"; then
+  echo "error: failed to create temp directory '$HVM_TMP_DIR'" >&2
+  exit 1
+fi
 
 # Timeout
 # -------
@@ -71,12 +82,12 @@ fi
 run_with_timeout() {
   local out_var="$1" t="$2" marker cap_file pid status
   shift 2
-  marker="$(mktemp "${TMPDIR:-/tmp}/hvm-timeout.XXXXXX")" || return 1
-  cap_file="$(mktemp "${TMPDIR:-/tmp}/hvm-capture.XXXXXX")" || {
-    rm -f "$marker"
-    return 1
-  }
+
+  marker="${HVM_TMP_DIR}/hvm4-test-runner.timeout.marker"
+  cap_file="${HVM_TMP_DIR}/hvm4-test-runner.capture.log"
+
   rm -f "$marker"
+  : > "$cap_file" || return 1
   "$@" >"$cap_file" 2>&1 & pid=$!
   ( sleep "$t"; kill -0 "$pid" 2>/dev/null || exit 0; : > "$marker"; kill -KILL "$pid" 2>/dev/null || true ) &
   wait "$pid" 2>/dev/null; status=$?

@@ -27,6 +27,7 @@ Flags:
 - `-o <path>`, `--output <path>` emits + compiles a standalone executable to a file path
 - `--ffi <path>` loads one FFI shared library before parsing
 - `--ffi-dir <path>` loads all FFI shared libraries in a directory before parsing
+- Temporary runtime/script artifacts are written to `~/.hvm/tmp` by default (`HVM_TMPDIR=<dir>` override; fallback `/tmp/hvm4` when `HOME` is unavailable)
 
 ## Examples
 

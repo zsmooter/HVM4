@@ -4,6 +4,8 @@
 // and supports writing a native executable with `-o/--output`.
 
 #include <limits.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -153,45 +155,91 @@ fn void aot_write_c_file(const char *c_path, const char *argv0, const char *src_
   aot_emit(c_path, runtime_path, src_path, src_text, cfg);
 }
 
-// Builds one mkdtemp template path using TMPDIR or /tmp.
-fn void aot_build_temp_template(char *out, u32 out_len) {
-  const char *tmp = getenv("TMPDIR");
+// Ensures one directory exists.
+fn void aot_build_ensure_dir(const char *path) {
+  struct stat st;
+  if (stat(path, &st) == 0) {
+    if (S_ISDIR(st.st_mode)) {
+      return;
+    }
+    fprintf(stderr, "ERROR: temp path is not a directory '%s'\n", path);
+    exit(1);
+  }
+
+  if (mkdir(path, 0700) != 0) {
+    if (errno == EEXIST && stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+      return;
+    }
+    fprintf(stderr, "ERROR: failed to create directory '%s'\n", path);
+    exit(1);
+  }
+}
+
+// Ensures one directory tree exists (mkdir -p behavior).
+fn void aot_build_ensure_dir_tree(const char *path) {
+  char buf[PATH_MAX];
+  int n = snprintf(buf, sizeof(buf), "%s", path);
+  if (n < 0 || n >= (int)sizeof(buf)) {
+    sys_error("temp path too long");
+  }
+
+  u32 len = (u32)strlen(buf);
+  for (u32 i = 1; i < len; i++) {
+    if (buf[i] != '/') {
+      continue;
+    }
+    buf[i] = '\0';
+    if (buf[0] != '\0') {
+      aot_build_ensure_dir(buf);
+    }
+    buf[i] = '/';
+  }
+  if (buf[0] != '\0') {
+    aot_build_ensure_dir(buf);
+  }
+}
+
+// Reads one temp root from HVM_TMPDIR, HOME/.hvm/tmp, or /tmp/hvm4.
+fn void aot_build_temp_root(char *out, u32 out_len) {
+  const char *tmp = getenv("HVM_TMPDIR");
   if (tmp == NULL || tmp[0] == '\0') {
-    tmp = "/tmp";
+    const char *home = getenv("HOME");
+    if (home != NULL && home[0] != '\0') {
+      int n = snprintf(out, out_len, "%s/.hvm/tmp", home);
+      if (n < 0 || n >= (int)out_len) {
+        sys_error("AOT temp root path too long");
+      }
+      aot_build_ensure_dir_tree(out);
+      return;
+    }
+    tmp = "/tmp/hvm4";
   }
 
-  int n = snprintf(out, out_len, "%s/hvm-aot.XXXXXX", tmp);
+  int n = snprintf(out, out_len, "%s", tmp);
   if (n < 0 || n >= (int)out_len) {
-    sys_error("AOT temp directory path too long");
+    sys_error("AOT temp root path too long");
   }
+
+  aot_build_ensure_dir_tree(out);
 }
 
-// Creates one temporary build directory and writes it to `out`.
-fn void aot_build_temp_dir(char *out, u32 out_len) {
-  aot_build_temp_template(out, out_len);
-  if (mkdtemp(out) == NULL) {
-    sys_error("failed to create AOT temp directory");
-  }
-}
-
-// Joins one directory + filename into `out`.
-fn void aot_build_join(char *out, u32 out_len, const char *dir, const char *file) {
-  int n = snprintf(out, out_len, "%s/%s", dir, file);
+// Builds one deterministic AOT temp-file path.
+fn void aot_build_temp_path(char *out, u32 out_len, const char *name) {
+  char tmp_root[PATH_MAX];
+  aot_build_temp_root(tmp_root, sizeof(tmp_root));
+  int n = snprintf(out, out_len, "%s/%s", tmp_root, name);
   if (n < 0 || n >= (int)out_len) {
-    sys_error("AOT temp path too long");
+    sys_error("AOT temp file path too long");
   }
 }
 
-// Removes temporary C/executable files and then removes the temp directory.
-fn void aot_build_cleanup(const char *tmp_dir, const char *c_path, const char *x_path) {
+// Removes temporary AOT files.
+fn void aot_build_cleanup(const char *c_path, const char *x_path) {
   if (x_path != NULL && x_path[0] != '\0') {
     unlink(x_path);
   }
   if (c_path != NULL && c_path[0] != '\0') {
     unlink(c_path);
-  }
-  if (tmp_dir != NULL && tmp_dir[0] != '\0') {
-    rmdir(tmp_dir);
   }
 }
 
@@ -205,16 +253,14 @@ fn void aot_build_to_c(const char *argv0, const char *src_path, const char *src_
 // Emits + compiles + runs once, then removes all temporary files.
 fn int aot_build_as_c_once(const char *argv0, const char *src_path, const char *src_text, const AotBuildCfg *cfg) {
   int  rc = 1;
-  char tmp_dir[PATH_MAX];
   char c_path[PATH_MAX];
   char x_path[PATH_MAX];
   int timed = aot_build_timing_enabled();
   double t0 = timed ? aot_build_now_ms() : 0.0;
   double tp = t0;
 
-  aot_build_temp_dir(tmp_dir, sizeof(tmp_dir));
-  aot_build_join(c_path, sizeof(c_path), tmp_dir, "main.c");
-  aot_build_join(x_path, sizeof(x_path), tmp_dir, "main.bin");
+  aot_build_temp_path(c_path, sizeof(c_path), "hvm4-aot-as-c.main.c");
+  aot_build_temp_path(x_path, sizeof(x_path), "hvm4-aot-as-c.main.bin");
   if (timed) {
     double now = aot_build_now_ms();
     aot_build_timing_log("prepare", now - tp);
@@ -235,7 +281,7 @@ fn int aot_build_as_c_once(const char *argv0, const char *src_path, const char *
   }
   if (rc != 0) {
     fprintf(stderr, "ERROR: failed to compile AOT program '%s'\n", c_path);
-    aot_build_cleanup(tmp_dir, c_path, x_path);
+    aot_build_cleanup(c_path, x_path);
     if (timed) {
       double now = aot_build_now_ms();
       aot_build_timing_log("cleanup", now - tp);
@@ -255,7 +301,7 @@ fn int aot_build_as_c_once(const char *argv0, const char *src_path, const char *
     aot_build_timing_log("run", now - tp);
     tp = now;
   }
-  aot_build_cleanup(tmp_dir, c_path, x_path);
+  aot_build_cleanup(c_path, x_path);
   if (timed) {
     double now = aot_build_now_ms();
     aot_build_timing_log("cleanup", now - tp);
@@ -267,14 +313,12 @@ fn int aot_build_as_c_once(const char *argv0, const char *src_path, const char *
 // Emits + compiles a native executable to `out_path`.
 fn int aot_build_to_output(const char *argv0, const char *src_path, const char *src_text, const char *out_path, const AotBuildCfg *cfg) {
   int  rc = 1;
-  char tmp_dir[PATH_MAX];
   char c_path[PATH_MAX];
   int timed = aot_build_timing_enabled();
   double t0 = timed ? aot_build_now_ms() : 0.0;
   double tp = t0;
 
-  aot_build_temp_dir(tmp_dir, sizeof(tmp_dir));
-  aot_build_join(c_path, sizeof(c_path), tmp_dir, "main.c");
+  aot_build_temp_path(c_path, sizeof(c_path), "hvm4-aot-output.main.c");
   if (timed) {
     double now = aot_build_now_ms();
     aot_build_timing_log("prepare", now - tp);
@@ -297,7 +341,7 @@ fn int aot_build_to_output(const char *argv0, const char *src_path, const char *
     fprintf(stderr, "ERROR: failed to compile AOT executable '%s'\n", out_path);
   }
 
-  aot_build_cleanup(tmp_dir, c_path, NULL);
+  aot_build_cleanup(c_path, NULL);
   if (timed) {
     double now = aot_build_now_ms();
     aot_build_timing_log("cleanup", now - tp);
