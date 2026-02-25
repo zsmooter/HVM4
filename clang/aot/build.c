@@ -131,6 +131,16 @@ fn int aot_build_spawn(char *const argv[]) {
     return WEXITSTATUS(status);
   }
 
+  if (WIFSIGNALED(status)) {
+    int sig = WTERMSIG(status);
+    const char *sig_name = strsignal(sig);
+    if (sig_name == NULL) {
+      sig_name = "unknown signal";
+    }
+    fprintf(stderr, "ERROR: child process terminated by signal. %s\n", sig_name);
+    return 128 + sig;
+  }
+
   return 1;
 }
 
