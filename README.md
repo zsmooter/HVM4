@@ -15,7 +15,10 @@ cd clang && clang -O2 -o main main.c
 ./clang/main test/file.hvm -s -C10
 
 # Run all tests
-./scripts/test.sh
+./test/_all_.sh
+
+# Run benchmarks (from sibling bench repo)
+cd ../bench && ./bench.ts --hvm-interpreted
 ```
 
 Flags:

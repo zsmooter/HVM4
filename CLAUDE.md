@@ -26,13 +26,11 @@ cd clang && clang -O2 -o main main.c
 ./clang/main test/file.hvm -s -C10
 
 # Run tests (interpreted, then AOT compiled)
-./scripts/test.sh
+./test/_all_.sh
 
-# Run benchmarks (interpreted)
-./scripts/bench.sh --interpreted
-
-# Run benchmarks (AOT compiled)
-./scripts/bench.sh --compiled
+# Run benchmarks (from the unified bench repo)
+cd ../bench && ./bench.ts --hvm-interpreted
+cd ../bench && ./bench.ts --hvm-compiled
 ```
 
 ## Docs Map

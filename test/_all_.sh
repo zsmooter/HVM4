@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/test.sh
+# test/_all_.sh
 # ===============
 # Unified test runner for HVM4.
 # Runs interpreted and AOT-compiled modes in sequence.
@@ -15,7 +15,7 @@
 
 set -uo pipefail
 
-DIR="$(cd "$(dirname "$0")/../test" && pwd)"
+DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 C_BIN="$ROOT_DIR/clang/main"
 C_MAIN="${C_BIN}.c"
@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
       ;;
     -h|--help)
       cat <<'EOF'
-usage: scripts/test.sh [--interpreted-only|-i]
+usage: test/_all_.sh [--interpreted-only|-i]
 
 Options:
   -i, --interpreted-only   Run interpreted tests only (skip AOT tests)
@@ -44,7 +44,7 @@ EOF
       ;;
     *)
       echo "error: unknown option: $1" >&2
-      echo "run scripts/test.sh --help for usage" >&2
+      echo "run test/_all_.sh --help for usage" >&2
       exit 1
       ;;
   esac
