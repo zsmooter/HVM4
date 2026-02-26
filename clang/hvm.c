@@ -342,6 +342,8 @@ static int    PARSE_FORK_SIDE = -1;      // -1 = off, 0 = left branch (DP0), 1 =
 #include "sys/runtime_error.c"
 #include "sys/path_join.c"
 #include "sys/file_read.c"
+#include "sys/mmap_anon.c"
+#include "sys/munmap_anon.c"
 
 // Table
 // =====

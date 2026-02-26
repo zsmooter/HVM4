@@ -2,12 +2,6 @@
 // --------------------
 // Initializes process-global state for one program execution.
 
-#include <sys/mman.h>
-
-#ifndef MAP_ANONYMOUS
-  #define MAP_ANONYMOUS MAP_ANON
-#endif
-
 // Initializes runtime globals and evaluator flags.
 fn void runtime_init(u32 threads, int debug, int silent, int steps_enable) {
   thread_set_count(threads);
@@ -19,12 +13,8 @@ fn void runtime_init(u32 threads, int debug, int silent, int steps_enable) {
 
   if (HEAP_CAP <= ((u64)SIZE_MAX / sizeof(Term))) {
     size_t heap_bytes = (size_t)(HEAP_CAP * sizeof(Term));
-    int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#ifdef MAP_NORESERVE
-    mmap_flags |= MAP_NORESERVE;
-#endif
-    void *heap_map = mmap(NULL, heap_bytes, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
-    if (heap_map != MAP_FAILED) {
+    void  *heap_map   = sys_mmap_anon(heap_bytes);
+    if (heap_map != NULL) {
       HEAP = (Term *)heap_map;
     }
   }
@@ -37,7 +27,7 @@ fn void runtime_init(u32 threads, int debug, int silent, int steps_enable) {
   symbols_init();
   prim_init();
 
-  DEBUG = debug;
-  SILENT = silent;
+  DEBUG        = debug;
+  SILENT       = silent;
   STEPS_ENABLE = steps_enable;
 }

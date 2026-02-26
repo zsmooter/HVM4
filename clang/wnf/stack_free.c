@@ -1,5 +1,3 @@
-#include <sys/mman.h>
-
 fn void wnf_stack_free(void) {
   u32 threads = thread_get_count();
   for (u32 i = 0; i < threads; i++) {
@@ -8,7 +6,7 @@ fn void wnf_stack_free(void) {
       continue;
     }
     if (bank->stack_mmap) {
-      munmap(bank->stack, bank->stack_bytes);
+      sys_munmap_anon(bank->stack, bank->stack_bytes);
     } else {
       free(bank->stack);
     }

@@ -1,9 +1,3 @@
-#include <sys/mman.h>
-
-#ifndef MAP_NORESERVE
-#define MAP_NORESERVE 0
-#endif
-
 fn void wnf_stack_init(void) {
   WnfBank *bank = WNF_BANK;
   if (bank->stack) {
@@ -11,12 +5,10 @@ fn void wnf_stack_init(void) {
   }
 
   u64 bytes = WNF_CAP * sizeof(Term);
-  int prot  = PROT_READ | PROT_WRITE;
-  int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
-  Term *stack = (Term *)mmap(NULL, bytes, prot, flags, -1, 0);
-  u8 stack_mmap = 1;
+  Term *stack      = (Term *)sys_mmap_anon(bytes);
+  u8    stack_mmap = 1;
 
-  if (stack == MAP_FAILED) {
+  if (stack == NULL) {
     stack = (Term *)malloc(bytes);
     stack_mmap = 0;
   }
