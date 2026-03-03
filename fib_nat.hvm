@@ -1,0 +1,19 @@
+@add = λ{
+  #ZER: λb. b;
+  #SUC: λa. λb. #SUC{@add(a,b)}
+}
+
+@fib = λ{
+  #ZER: #ZER;
+  #SUC: λ{
+    #ZER: #SUC{#ZER}
+    #SUC: λ&p. @add(@fib(#SUC{p}), @fib(p))
+  }
+}
+
+@u32 = λ{
+  #ZER: 0
+  #SUC: λp. 1 + @u32(p)
+}
+
+@main = @u32(@fib(30n))
