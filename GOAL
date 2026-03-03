@@ -105,8 +105,9 @@ desired shape. truth is, the codegen is an initial implementation that isn't
 well structured, and should be completely rewritten.
 
 your goal is to rewrite the AOT compiler from scratch, so that it generates C
-functions as a proper pattern-matching case-tree. for fib(), for example, it
-should generate something as similar as possible to this pseudo C code:
+functions as a proper pattern-matching case-tree. for fib() (from
+./fib_nat.hvm), for example, it should generate something as similar as possible
+to this pseudo C code:
 
 // @fib = λ{
 //   #ZER: #ZER;
@@ -184,4 +185,4 @@ your goals are:
 - refactor the codegen so that it emits code as close to the shape above as possible
 - ensure that all tests and benchmarks still run with the new aot compiled mode
 
-if both are met, let me know.
+when both are met, let me know.
