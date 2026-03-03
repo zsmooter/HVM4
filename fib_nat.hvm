@@ -7,7 +7,9 @@
   #ZER: #ZER;
   #SUC: λ{
     #ZER: #SUC{#ZER}
-    #SUC: λ&p. @add(@fib(#SUC{p}), @fib(p))
+    #SUC: λp.
+      ! P &L = p;
+      @add(@fib(#SUC{P₀}), @fib(P₁))
   }
 }
 
