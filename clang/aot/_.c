@@ -22,6 +22,14 @@ typedef struct {
   RuntimeFfiLoad ffi[RUNTIME_FFI_MAX];
 } AotBuildCfg;
 
+// Duplication pair used by generated code.
+typedef struct {
+  Term dp0;
+  Term dp1;
+} Dups;
+
+fn Term wnf(Term term);
+
 // Runtime
 // -------
 
@@ -29,7 +37,6 @@ typedef struct {
 static HvmAotFn AOT_FNS[BOOK_CAP] = {0};
 
 // AOT runtime limits.
-#define AOT_ARG_CAP   16
 #define AOT_ENV_CAP   16
 #define AOT_MAX_DEPTH 4096
 
@@ -53,8 +60,21 @@ fn void aot_itrs_add(u64 amount) {
 // Fallback
 // --------
 
-// Rebuilds an ALO node from captured APP-LAM arguments.
-fn Term aot_fallback_alo(u64 tm_loc, u16 len, const Term *args) {
+// Builds one lexical SUB-bit mask with all `len` entries enabled.
+fn u16 aot_fallback_sub_all(u16 len) {
+  u16 mask = 0;
+  for (u16 i = 0; i < len; i++) {
+    mask |= (u16)(1u << i);
+  }
+  return mask;
+}
+
+// Rebuilds one ALO node from captured lexical bindings.
+//
+// `sub_mask` controls which bind entries are stored with the SUB bit:
+// - bit i = 1: store `args[i] | SUB`   (LAM bindings)
+// - bit i = 0: store `args[i]` as-is   (DUP bindings; preserves SUB state)
+fn Term aot_fallback_alo_ctx(u64 tm_loc, u16 len, const Term *args, u16 sub_mask) {
   if (len == 0) {
     return term_new(0, ALO, 0, tm_loc);
   }
@@ -62,7 +82,12 @@ fn Term aot_fallback_alo(u64 tm_loc, u16 len, const Term *args) {
   u64 ls_loc = 0;
   for (u16 i = 0; i < len; i++) {
     u64 bind = heap_alloc(2);
-    heap_set(bind + 0, term_sub_set(args[i], 1));
+    u8  sub  = (u8)((sub_mask >> i) & 1);
+    Term val = args[i];
+    if (sub) {
+      val = term_sub_set(val, 1);
+    }
+    heap_set(bind + 0, val);
     heap_set(bind + 1, term_new(0, NUM, 0, ls_loc));
     ls_loc = bind;
   }
@@ -71,6 +96,11 @@ fn Term aot_fallback_alo(u64 tm_loc, u16 len, const Term *args) {
   u64 alo_val = ((ls_loc & ALO_LS_MASK) << ALO_TM_BITS) | (tm_loc & ALO_TM_MASK);
   heap_set(alo_loc, alo_val);
   return term_new(0, ALO, len, alo_loc);
+}
+
+// Rebuilds one ALO node assuming all bindings are lambda substitutions.
+fn Term aot_fallback_alo(u64 tm_loc, u16 len, const Term *args) {
+  return aot_fallback_alo_ctx(tm_loc, len, args, aot_fallback_sub_all(len));
 }
 
 // Reapplies arguments [from, argc) to a head term.
@@ -91,6 +121,86 @@ fn int aot_is_copy_free(Term term) {
     return 1;
   }
   return 0;
+}
+
+// Reduces one term to WNF using the caller's current stack position.
+fn Term aot_eval(Term term, u32 *s_pos) {
+  WNF_S_POS = *s_pos;
+  Term out  = wnf(term);
+  *s_pos    = WNF_S_POS;
+  return out;
+}
+
+// Pops one APP frame and returns its argument.
+// Returns 0 when the stack top is not an APP frame.
+fn Term aot_pop_app_arg(Term *stack, u32 *s_pos, u32 base) {
+  if (*s_pos <= base) {
+    return 0;
+  }
+
+  Term frm = stack[*s_pos - 1];
+  if (term_tag(frm) != APP) {
+    return 0;
+  }
+
+  (*s_pos)--;
+  u64 app = term_val(frm);
+  return heap_read(app + 1);
+}
+
+// Pushes one synthetic APP frame carrying `arg`.
+// Runtime-errors on stack overflow.
+fn void aot_push_app_arg(Term *stack, u32 *s_pos, u32 base, Term arg) {
+  (void)base;
+  if (*s_pos == UINT32_MAX) {
+    sys_runtime_error("AOT stack overflow while pushing application argument");
+  }
+
+  u64 app = heap_alloc(2);
+  heap_set(app + 0, term_new_era());
+  heap_set(app + 1, arg);
+  stack[*s_pos] = term_new(0, APP, 0, app);
+  (*s_pos)++;
+}
+
+// Pushes all constructor fields as APP arguments (left-to-right).
+// Contract: `ctr` is already known to be a constructor.
+// Runtime-errors on stack overflow.
+fn void aot_push_fields(Term *stack, u32 *s_pos, u32 base, Term ctr) {
+  (void)base;
+  u8  tag = term_tag(ctr);
+  u32 ari = (u32)(tag - C00);
+
+  if ((u64)(*s_pos) + (u64)ari > (u64)UINT32_MAX) {
+    sys_runtime_error("AOT stack overflow while pushing constructor fields");
+  }
+
+  u64 loc = term_val(ctr);
+  for (u32 j = ari; j > 0; j--) {
+    Term fld = heap_read(loc + (u64)(j - 1));
+    aot_push_app_arg(stack, s_pos, base, fld);
+  }
+}
+
+// Creates one DUP projection pair for generated code.
+fn Dups aot_dup(u32 lab, Term val) {
+  u64 loc = heap_alloc(1);
+  heap_set(loc, val);
+  Term dp0 = term_new_dp0(lab, loc);
+  Term dp1 = term_new_dp1(lab, loc);
+  return (Dups){ .dp0 = dp0, .dp1 = dp1 };
+}
+
+// Creates one DUP pair and returns its shared cell location.
+fn Dups aot_dup_loc(u32 lab, Term val, u64 *loc_out) {
+  u64 loc = heap_alloc(1);
+  heap_set(loc, val);
+  if (loc_out != NULL) {
+    *loc_out = loc;
+  }
+  Term dp0 = term_new_dp0(lab, loc);
+  Term dp1 = term_new_dp1(lab, loc);
+  return (Dups){ .dp0 = dp0, .dp1 = dp1 };
 }
 
 // Calls
@@ -137,7 +247,13 @@ fn int aot_try_call(u32 id, Term *stack, u32 *s_pos, u32 base, Term *out) {
     return 0;
   }
 
+  if (AOT_CALL_DEPTH >= AOT_MAX_DEPTH) {
+    return 0;
+  }
+
+  AOT_CALL_DEPTH++;
   *out = fun(stack, s_pos, base);
+  AOT_CALL_DEPTH--;
   return 1;
 }
 
