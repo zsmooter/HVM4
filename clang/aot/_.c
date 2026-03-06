@@ -1,19 +1,10 @@
-// HVM AOT Runtime Core
-// ====================
+// HVM AOT Runtime
+// ===============
 //
-// This module exposes the tiny runtime surface used by generated AOT code.
-//
-// Model:
-// - Each compiled definition is one stack-entry function: `F_<name>`.
-// - Generated code is direct tree-shaped C with explicit fallback points.
-// - Deopt returns residual runtime terms (ALO/app chains), never rewinds state.
-
-// Type
-// ----
+// Tiny runtime surface used by generated AOT code.
 
 typedef Term (*HvmAotFn)(Term *stack, u32 *s_pos, u32 base);
 
-// Build-time runtime config embedded into generated AOT executables.
 typedef struct {
   u32            threads;
   int            debug;
@@ -22,45 +13,39 @@ typedef struct {
   RuntimeFfiLoad ffi[RUNTIME_FFI_MAX];
 } AotBuildCfg;
 
-// Duplication pair used by generated code.
 typedef struct {
   Term dp0;
   Term dp1;
 } Dups;
 
 fn Term wnf(Term term);
+fn Term wnf_dup_nam(u32 lab, u64 loc, u8 side, Term nam);
+fn Term wnf_dup_lam(u32 lab, u64 loc, u8 side, Term lam);
+fn Term wnf_dup_sup(u32 lab, u64 loc, u8 side, Term sup);
+fn Term wnf_dup_nod(u32 lab, u64 loc, u8 side, Term term);
 
-// Runtime
-// -------
-
-// Per-definition compiled entrypoint table (BOOK id -> native function).
 static HvmAotFn AOT_FNS[BOOK_CAP] = {0};
 
-// AOT runtime limits.
 #define AOT_SUB_CAP   16
 #define AOT_MAX_DEPTH 4096
 
-// Thread-local compiled-call depth for recursion cutoff.
 static _Thread_local u32 AOT_CALL_DEPTH = 0;
 
-// Counts one interaction on compiled paths.
+// Counts one interaction.
 fn void aot_itrs_inc(void) {
   if (ITRS_ENABLED) {
     ITRS++;
   }
 }
 
-// Adds a known number of interactions on compiled paths.
+// Adds interactions.
 fn void aot_itrs_add(u64 amount) {
   if (ITRS_ENABLED) {
     ITRS += amount;
   }
 }
 
-// Fallback
-// --------
-
-// Rebuilds one ALO node from an existing substitution-list head.
+// Rebuilds one ALO.
 fn Term aot_fallback_alo_ls(u64 tm_loc, u16 len, u64 ls_loc) {
   if (len == 0) {
     return term_new(0, ALO, 0, tm_loc);
@@ -68,7 +53,55 @@ fn Term aot_fallback_alo_ls(u64 tm_loc, u16 len, u64 ls_loc) {
   return term_new_alo(ls_loc, len, tm_loc);
 }
 
-// Reduces one term to WNF using the caller's current stack position.
+// Rebuilds one REF app.
+fn Term aot_fallback_ref(u32 ref_id, Term *stack, u32 *s_pos, u32 base) {
+  Term out = term_new_ref(ref_id);
+  while (*s_pos > base) {
+    Term frm = stack[--(*s_pos)];
+    if (term_tag(frm) != APP) {
+      sys_runtime_error("AOT REF fallback saw a non-APP frame");
+    }
+    u64  app = term_val(frm);
+    Term arg = heap_read(app + 1);
+    out = term_new_app(out, arg);
+  }
+  return out;
+}
+
+// Closes one APP slice.
+fn Term aot_close_apps(Term out, Term *stack, u32 *s_pos, u32 base) {
+  while (*s_pos > base) {
+    Term frm = stack[--(*s_pos)];
+    if (term_tag(frm) != APP) {
+      sys_runtime_error("AOT expr call saw a non-APP frame");
+    }
+    u64  app = term_val(frm);
+    Term arg = heap_read(app + 1);
+    out = term_new_app(out, arg);
+  }
+  return out;
+}
+
+// Wraps unary ctrs.
+fn Term aot_wrap_ctr1(u32 ctr_id, u32 reps, Term bod) {
+  for (u32 i = 0; i < reps; i++) {
+    Term args[1];
+    args[0] = bod;
+    bod = term_new_ctr(ctr_id, 1, args);
+  }
+  return bod;
+}
+
+// Wraps numeric OP2s.
+fn Term aot_wrap_op2_num_lhs(u32 opr, u32 lhs, u32 reps, Term bod) {
+  Term num = term_new_num(lhs);
+  for (u32 i = 0; i < reps; i++) {
+    bod = term_new_op2(opr, num, bod);
+  }
+  return bod;
+}
+
+// Runs WNF on one term.
 fn Term aot_eval(Term term, u32 *s_pos) {
   WNF_S_POS = *s_pos;
   Term out  = wnf(term);
@@ -76,8 +109,97 @@ fn Term aot_eval(Term term, u32 *s_pos) {
   return out;
 }
 
-// Pops one APP frame and returns its argument.
-// Returns 0 when the stack top is not an APP frame.
+// Forces one head fragment.
+fn Term aot_force(Term term) {
+  while (1) {
+    switch (term_tag(term)) {
+      case VAR: {
+        u64  loc  = term_val(term);
+        Term cell = heap_read(loc);
+        if (!term_sub_get(cell)) {
+          return term;
+        }
+        term = term_sub_set(cell, 0);
+        continue;
+      }
+      case DP0:
+      case DP1: {
+        u8  side = term_tag(term) == DP0 ? 0 : 1;
+        u64 loc  = term_val(term);
+        u32 lab  = term_ext(term);
+        Term val = heap_take(loc);
+        if (term_sub_get(val)) {
+          term = term_sub_set(val, 0);
+          continue;
+        }
+        switch (term_tag(val)) {
+          case VAR:
+          case DP0:
+          case DP1: {
+            val = aot_force(val);
+            switch (term_tag(val)) {
+              case VAR:
+              case DP0:
+              case DP1: {
+                heap_set(loc, val);
+                return term;
+              }
+              default: {
+                break;
+              }
+            }
+            break;
+          }
+          default: {
+            break;
+          }
+        }
+        switch (term_tag(val)) {
+          case NAM:
+          case BJV:
+          case BJ0:
+          case BJ1: {
+            term = wnf_dup_nam(lab, loc, side, val);
+            continue;
+          }
+          case LAM: {
+            term = wnf_dup_lam(lab, loc, side, val);
+            continue;
+          }
+          case SUP: {
+            term = wnf_dup_sup(lab, loc, side, val);
+            continue;
+          }
+          case ERA:
+          case ANY:
+          case PRI:
+          case NUM:
+          case DRY:
+          case MAT:
+          case SWI:
+          case USE:
+          case INC:
+          case OP2:
+          case DSU:
+          case DDU:
+          case C00 ... C16: {
+            term = wnf_dup_nod(lab, loc, side, val);
+            continue;
+          }
+          default: {
+            heap_set(loc, val);
+            return term;
+          }
+        }
+      }
+      default: {
+        return term;
+      }
+    }
+  }
+}
+
+// Pops one APP arg.
 fn Term aot_pop_app_arg(Term *stack, u32 *s_pos, u32 base) {
   if (*s_pos <= base) {
     return 0;
@@ -93,8 +215,7 @@ fn Term aot_pop_app_arg(Term *stack, u32 *s_pos, u32 base) {
   return heap_read(app + 1);
 }
 
-// Pushes one synthetic APP frame carrying `arg`.
-// Runtime-errors on stack overflow.
+// Pushes one APP arg.
 fn void aot_push_app_arg(Term *stack, u32 *s_pos, u32 base, Term arg) {
   (void)base;
   if (*s_pos == UINT32_MAX) {
@@ -108,9 +229,7 @@ fn void aot_push_app_arg(Term *stack, u32 *s_pos, u32 base, Term arg) {
   (*s_pos)++;
 }
 
-// Pushes all constructor fields as APP arguments (left-to-right).
-// Contract: `ctr` is already known to be a constructor.
-// Runtime-errors on stack overflow.
+// Pushes constructor fields.
 fn void aot_push_fields(Term *stack, u32 *s_pos, u32 base, Term ctr) {
   (void)base;
   u8  tag = term_tag(ctr);
@@ -127,18 +246,15 @@ fn void aot_push_fields(Term *stack, u32 *s_pos, u32 base, Term ctr) {
   }
 }
 
-// Calls
-// -----
-
-// Returns current compiled recursion depth.
+// Returns call depth.
 fn u32 aot_call_depth(void) {
   return AOT_CALL_DEPTH;
 }
 
-// Calls one known compiled function pointer with depth guard.
+// Calls one compiled fn.
 fn Term aot_call_direct(HvmAotFn fun, u32 ref_id, Term *stack, u32 *s_pos, u32 base) {
   if (AOT_CALL_DEPTH >= AOT_MAX_DEPTH) {
-    return term_new_ref(ref_id);
+    return aot_fallback_ref(ref_id, stack, s_pos, base);
   }
 
   AOT_CALL_DEPTH++;
@@ -148,15 +264,21 @@ fn Term aot_call_direct(HvmAotFn fun, u32 ref_id, Term *stack, u32 *s_pos, u32 b
   return out;
 }
 
-// Calls one compiled ref using current stack slice, else returns residual REF application.
+// Calls one compiled fn in expr position.
+fn Term aot_call_expr(HvmAotFn fun, u32 ref_id, Term *stack, u32 *s_pos, u32 base) {
+  Term out = aot_call_direct(fun, ref_id, stack, s_pos, base);
+  return aot_close_apps(out, stack, s_pos, base);
+}
+
+// Calls one compiled ref.
 fn Term aot_call_ref(u32 ref_id, Term *stack, u32 *s_pos, u32 base) {
   if (AOT_CALL_DEPTH >= AOT_MAX_DEPTH) {
-    return term_new_ref(ref_id);
+    return aot_fallback_ref(ref_id, stack, s_pos, base);
   }
 
   HvmAotFn fun = AOT_FNS[ref_id];
   if (fun == NULL) {
-    return term_new_ref(ref_id);
+    return aot_fallback_ref(ref_id, stack, s_pos, base);
   }
 
   AOT_CALL_DEPTH++;
@@ -166,10 +288,7 @@ fn Term aot_call_ref(u32 ref_id, Term *stack, u32 *s_pos, u32 base) {
   return out;
 }
 
-// Dispatch
-// --------
-
-// Tries to execute a compiled function for a REF; returns 0 when absent.
+// Tries one compiled call.
 fn int aot_try_call(u32 id, Term *stack, u32 *s_pos, u32 base, Term *out) {
   if (STEPS_ITRS_LIM != 0) {
     return 0;
@@ -194,10 +313,7 @@ fn int aot_try_call(u32 id, Term *stack, u32 *s_pos, u32 base, Term *out) {
   return 1;
 }
 
-// Utils
-// -----
-
-// Converts a symbol name into a filesystem-safe alnum/_ identifier.
+// Sanitizes one symbol.
 fn char *aot_sanitize(const char *name) {
   size_t len = strlen(name);
   size_t cap = (len * 4) + 1;

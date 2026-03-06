@@ -316,6 +316,7 @@ static int    PARSE_FORK_SIDE = -1;      // -1 = off, 0 = left branch (DP0), 1 =
 #include "term/new/inc.c"
 #include "term/new/num.c"
 #include "term/clone.c"
+#include "term/op2_u32.c"
 
 // Heap Substitution
 // =================
