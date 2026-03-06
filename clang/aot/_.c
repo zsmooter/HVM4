@@ -4,6 +4,7 @@
 // Tiny runtime surface used by generated AOT code.
 
 typedef Term (*HvmAotFn)(Term *stack, u32 *s_pos, u32 base);
+typedef Term (*HvmAotFn1)(Term arg, Term *stack, u32 *s_pos, u32 base);
 
 typedef struct {
   u32            threads;
@@ -28,6 +29,7 @@ static HvmAotFn AOT_FNS[BOOK_CAP] = {0};
 
 #define AOT_SUB_CAP   16
 #define AOT_MAX_DEPTH 4096
+#define AOT_MAX_HELPER_DEPTH 256
 
 static _Thread_local u32 AOT_CALL_DEPTH = 0;
 
@@ -84,10 +86,15 @@ fn Term aot_close_apps(Term out, Term *stack, u32 *s_pos, u32 base) {
 
 // Wraps unary ctrs.
 fn Term aot_wrap_ctr1(u32 ctr_id, u32 reps, Term bod) {
+  if (reps == 0) {
+    return bod;
+  }
+
+  u64 base = heap_alloc(reps);
   for (u32 i = 0; i < reps; i++) {
-    Term args[1];
-    args[0] = bod;
-    bod = term_new_ctr(ctr_id, 1, args);
+    u64 loc = base + i;
+    heap_set(loc, bod);
+    bod = term_new(0, C01, ctr_id, loc);
   }
   return bod;
 }
@@ -223,7 +230,6 @@ fn void aot_push_app_arg(Term *stack, u32 *s_pos, u32 base, Term arg) {
   }
 
   u64 app = heap_alloc(2);
-  heap_set(app + 0, term_new_era());
   heap_set(app + 1, arg);
   stack[*s_pos] = term_new(0, APP, 0, app);
   (*s_pos)++;
@@ -268,6 +274,19 @@ fn Term aot_call_direct(HvmAotFn fun, u32 ref_id, Term *stack, u32 *s_pos, u32 b
 fn Term aot_call_expr(HvmAotFn fun, u32 ref_id, Term *stack, u32 *s_pos, u32 base) {
   Term out = aot_call_direct(fun, ref_id, stack, s_pos, base);
   return aot_close_apps(out, stack, s_pos, base);
+}
+
+// Calls one unary compiled helper in expr position.
+fn Term aot_call_expr1(HvmAotFn1 fun1, HvmAotFn fun, u32 ref_id, Term arg, Term *stack, u32 *s_pos, u32 base) {
+  if (AOT_CALL_DEPTH >= AOT_MAX_HELPER_DEPTH) {
+    aot_push_app_arg(stack, s_pos, base, arg);
+    return aot_call_expr(fun, ref_id, stack, s_pos, base);
+  }
+
+  AOT_CALL_DEPTH++;
+  Term out = fun1(arg, stack, s_pos, base);
+  AOT_CALL_DEPTH--;
+  return out;
 }
 
 // Calls one compiled ref.

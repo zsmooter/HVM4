@@ -1,6 +1,6 @@
 @add = λ{
   #ZER: λb. b;
-  #SUC: λa. λb. #SUC{@add(a,b)}
+  #SUC: λa. λb. @add(a,#SUC{b})
 }
 
 @fib = λ{
@@ -14,8 +14,8 @@
 }
 
 @u32 = λ{
-  #ZER: 0
-  #SUC: λp. 1 + @u32(p)
+  #ZER: λn. n
+  #SUC: λp. λn. @u32(p,1+n)
 }
 
-@main = @u32(@fib(30n))
+@main = @u32(@fib(34n),0)

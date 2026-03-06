@@ -323,12 +323,16 @@ typedef struct {
   u64 succ_lam_loc;
   u32 zero_id;
   u32 succ_id;
+  u8  tail_acc;
 } AotLoopAdd;
 
 typedef struct {
   u64 root_loc;
+  u64 zero_lam_loc;
+  u64 succ_lam_loc;
   u32 zero_id;
   u32 succ_id;
+  u8  tail_acc;
 } AotLoopU32;
 
 // Emits one WNF comment.
@@ -412,6 +416,31 @@ fn int aot_term_is_num_val(Term term, u32 val) {
   return term_tag(term) == NUM && (u32)term_val(term) == val;
 }
 
+// Collects one unary constructor chain.
+fn int aot_collect_ctr1_chain(u64 loc, u32 *ctr_id, u32 *reps, u64 *bod_loc) {
+  Term term = heap_read(loc);
+  if (term_tag(term) != C01) {
+    return 0;
+  }
+
+  u32 id  = term_ext(term);
+  u32 len = 0;
+  u64 cur = loc;
+  while (1) {
+    term = heap_read(cur);
+    if (term_tag(term) != C01 || term_ext(term) != id) {
+      break;
+    }
+    len += 1;
+    cur = term_val(term);
+  }
+
+  *ctr_id  = id;
+  *reps    = len;
+  *bod_loc = cur;
+  return 1;
+}
+
 // Matches `self(x)`.
 fn int aot_match_self_app1(u64 loc, u32 self_id, u32 x_lvl) {
   Term app = heap_read(loc);
@@ -442,6 +471,91 @@ fn int aot_match_self_app2(u64 loc, u32 self_id, u32 x_lvl, u32 y_lvl) {
   Term arg1     = heap_read(app1_loc + 1);
 
   if (!aot_term_is_var_lvl(arg1, y_lvl)) {
+    return 0;
+  }
+
+  Term app0 = fun1;
+  if (term_tag(app0) != APP) {
+    return 0;
+  }
+
+  u64  app0_loc = term_val(app0);
+  Term fun0     = heap_read(app0_loc + 0);
+  Term arg0     = heap_read(app0_loc + 1);
+
+  if (!aot_term_is_var_lvl(arg0, x_lvl)) {
+    return 0;
+  }
+
+  return term_tag(fun0) == REF && term_ext(fun0) == self_id;
+}
+
+// Checks one unary ctr wrapping one binder var.
+fn int aot_term_is_ctr1_var(Term term, u32 ctr_id, u32 lvl) {
+  if (term_tag(term) != C01 || term_ext(term) != ctr_id) {
+    return 0;
+  }
+
+  return aot_term_is_var_lvl(heap_read(term_val(term) + 0), lvl);
+}
+
+// Checks one numeric op over one binder var.
+fn int aot_term_is_op2_num_var(Term term, u32 opr, u32 num, u32 lvl) {
+  if (term_tag(term) != OP2 || term_ext(term) != opr) {
+    return 0;
+  }
+
+  u64 op2 = term_val(term);
+  if (!aot_term_is_num_val(heap_read(op2 + 0), num)) {
+    return 0;
+  }
+
+  return aot_term_is_var_lvl(heap_read(op2 + 1), lvl);
+}
+
+// Matches `self(x, ctr(y))`.
+fn int aot_match_self_app2_ctr1(u64 loc, u32 self_id, u32 x_lvl, u32 y_lvl, u32 ctr_id) {
+  Term app1 = heap_read(loc);
+  if (term_tag(app1) != APP) {
+    return 0;
+  }
+
+  u64  app1_loc = term_val(app1);
+  Term fun1     = heap_read(app1_loc + 0);
+  Term arg1     = heap_read(app1_loc + 1);
+
+  if (!aot_term_is_ctr1_var(arg1, ctr_id, y_lvl)) {
+    return 0;
+  }
+
+  Term app0 = fun1;
+  if (term_tag(app0) != APP) {
+    return 0;
+  }
+
+  u64  app0_loc = term_val(app0);
+  Term fun0     = heap_read(app0_loc + 0);
+  Term arg0     = heap_read(app0_loc + 1);
+
+  if (!aot_term_is_var_lvl(arg0, x_lvl)) {
+    return 0;
+  }
+
+  return term_tag(fun0) == REF && term_ext(fun0) == self_id;
+}
+
+// Matches `self(x, num + y)`.
+fn int aot_match_self_app2_op2_num_var(u64 loc, u32 self_id, u32 x_lvl, u32 y_lvl, u32 opr, u32 num) {
+  Term app1 = heap_read(loc);
+  if (term_tag(app1) != APP) {
+    return 0;
+  }
+
+  u64  app1_loc = term_val(app1);
+  Term fun1     = heap_read(app1_loc + 0);
+  Term arg1     = heap_read(app1_loc + 1);
+
+  if (!aot_term_is_op2_num_var(arg1, opr, num, y_lvl)) {
     return 0;
   }
 
@@ -506,24 +620,26 @@ fn int aot_match_loop_add(u64 root, u32 self_id, AotLoopAdd *out) {
 
   u64 body = term_val(lam1_tm);
   Term bod_tm = heap_read(body);
-  if (term_tag(bod_tm) != C01) {
-    return 0;
-  }
-  if (term_ext(bod_tm) != term_ext(mis0_tm)) {
-    return 0;
-  }
-
-  u64 ctr = term_val(bod_tm);
-  if (!aot_match_self_app2(ctr + 0, self_id, 1, 2)) {
-    return 0;
-  }
-
   out->root_loc     = root;
   out->zero_lam_loc = hit0;
   out->succ_lam_loc = lam1;
   out->zero_id      = term_ext(root_tm);
   out->succ_id      = term_ext(mis0_tm);
-  return 1;
+
+  if (term_tag(bod_tm) == C01 && term_ext(bod_tm) == out->succ_id) {
+    u64 ctr = term_val(bod_tm);
+    if (aot_match_self_app2(ctr + 0, self_id, 1, 2)) {
+      out->tail_acc = 0;
+      return 1;
+    }
+  }
+
+  if (aot_match_self_app2_ctr1(body, self_id, 1, 2, out->succ_id)) {
+    out->tail_acc = 1;
+    return 1;
+  }
+
+  return 0;
 }
 
 // Matches one u32 loop.
@@ -536,10 +652,6 @@ fn int aot_match_loop_u32(u64 root, u32 self_id, AotLoopU32 *out) {
   u64 mat0 = term_val(root_tm);
   u64 hit0 = mat0 + 0;
   u64 mis0 = mat0 + 1;
-
-  if (!aot_term_is_num_val(heap_read(hit0), 0)) {
-    return 0;
-  }
 
   Term mis0_tm = heap_read(mis0);
   if (term_tag(mis0_tm) != MAT) {
@@ -559,23 +671,52 @@ fn int aot_match_loop_u32(u64 root, u32 self_id, AotLoopU32 *out) {
     return 0;
   }
 
-  u64  body   = term_val(hit1_tm);
-  Term bod_tm = heap_read(body);
-  if (term_tag(bod_tm) != OP2 || term_ext(bod_tm) != 0) {
-    return 0;
-  }
-
-  u64 op2 = term_val(bod_tm);
-  if (!aot_term_is_num_val(heap_read(op2 + 0), 1)) {
-    return 0;
-  }
-  if (!aot_match_self_app1(op2 + 1, self_id, 1)) {
-    return 0;
-  }
-
   out->root_loc = root;
+  out->zero_lam_loc = 0;
+  out->succ_lam_loc = 0;
   out->zero_id  = term_ext(root_tm);
   out->succ_id  = term_ext(mis0_tm);
+
+  if (aot_term_is_num_val(heap_read(hit0), 0)) {
+    u64  body   = term_val(hit1_tm);
+    Term bod_tm = heap_read(body);
+    if (term_tag(bod_tm) != OP2 || term_ext(bod_tm) != 0) {
+      return 0;
+    }
+
+    u64 op2 = term_val(bod_tm);
+    if (!aot_term_is_num_val(heap_read(op2 + 0), 1)) {
+      return 0;
+    }
+    if (!aot_match_self_app1(op2 + 1, self_id, 1)) {
+      return 0;
+    }
+
+    out->tail_acc = 0;
+    return 1;
+  }
+
+  Term hit0_tm = heap_read(hit0);
+  if (term_tag(hit0_tm) != LAM) {
+    return 0;
+  }
+  if (!aot_term_is_var_lvl(heap_read(term_val(hit0_tm)), 1)) {
+    return 0;
+  }
+
+  u64  lam1    = term_val(hit1_tm);
+  Term lam1_tm = heap_read(lam1);
+  if (term_tag(lam1_tm) != LAM) {
+    return 0;
+  }
+
+  if (!aot_match_self_app2_op2_num_var(term_val(lam1_tm), self_id, 1, 2, 0, 1)) {
+    return 0;
+  }
+
+  out->zero_lam_loc = hit0;
+  out->succ_lam_loc = lam1;
+  out->tail_acc     = 1;
   return 1;
 }
 
@@ -604,6 +745,38 @@ fn int aot_emit_get_fun_name(char *out, u32 out_cap, u32 ref_id) {
   }
 
   aot_emit_fun_name(out, out_cap, name);
+  return 1;
+}
+
+// Checks one direct unary helper.
+fn int aot_emit_has_direct_mat1(u32 ref_id) {
+  AotLoopAdd loop_add;
+  AotLoopU32 loop_u32;
+  if (ref_id >= BOOK_CAP || BOOK[ref_id] == 0) {
+    return 0;
+  }
+  if (aot_match_loop_add(BOOK[ref_id], ref_id, &loop_add)) {
+    return 0;
+  }
+  if (aot_match_loop_u32(BOOK[ref_id], ref_id, &loop_u32)) {
+    return 0;
+  }
+  return term_tag(heap_read(BOOK[ref_id])) == MAT;
+}
+
+// Returns one direct helper name for a saturated REF call.
+fn int aot_emit_get_direct_name(char *out, u32 out_cap, u32 ref_id, u32 argc) {
+  AotLoopAdd loop;
+  if (argc != 2 || ref_id >= BOOK_CAP || BOOK[ref_id] == 0) {
+    return 0;
+  }
+  if (!aot_match_loop_add(BOOK[ref_id], ref_id, &loop)) {
+    return 0;
+  }
+  if (!aot_emit_get_fun_name(out, out_cap, ref_id)) {
+    return 0;
+  }
+  strncat(out, "_2", out_cap - strlen(out) - 1);
   return 1;
 }
 
@@ -695,6 +868,21 @@ fn void aot_emit_expr_call(FILE *f, u64 loc, AotSubst sub, const char *out, cons
   fprintf(f, "%sTerm %s;\n", pad, out);
   fprintf(f, "%sif (STEPS_ITRS_LIM == 0) {\n", pad);
   fprintf(f, "%su32 %s = *sp;\n", pad1, base);
+  if (argc == 1 && ref_id == sub.self_id && aot_emit_has_direct_mat1(ref_id)) {
+    char dir_name[256];
+    char arg[32];
+    aot_emit_get_fun_name(dir_name, sizeof(dir_name), ref_id);
+    fprintf(f, "%s// Direct unary self call.\n", pad1);
+    aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
+    aot_emit_expr(f, args[0], sub, arg, pad1, tmp);
+    fprintf(f, "%s%s = aot_call_expr1(%s_1, %s, ", pad1, out, dir_name, dir_name);
+    aot_emit_ref_id(f, ref_id);
+    fprintf(f, ", %s, stack, sp, %s);\n", arg, base);
+    fprintf(f, "%s} else {\n", pad);
+    aot_emit_expr_app_set(f, loc, sub, out, pad1, tmp);
+    fprintf(f, "%s}\n", pad);
+    return;
+  }
   for (u32 i = 0; i < argc; i++) {
     char arg[32];
     aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
@@ -707,6 +895,41 @@ fn void aot_emit_expr_call(FILE *f, u64 loc, AotSubst sub, const char *out, cons
   fprintf(f, "%s} else {\n", pad);
   aot_emit_expr_app_set(f, loc, sub, out, pad1, tmp);
   fprintf(f, "%s}\n", pad);
+}
+
+// Emits one saturated direct tail call.
+fn int aot_emit_spine_direct(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
+  u32  ref_id = 0;
+  u32  argc   = 0;
+  u64  args[AOT_CALL_ARG_CAP];
+  char fun_name[256];
+
+  if (!aot_emit_collect_ref_app(loc, &ref_id, args, &argc)) {
+    return 0;
+  }
+  if (!aot_emit_get_direct_name(fun_name, sizeof(fun_name), ref_id, argc)) {
+    return 0;
+  }
+
+  char pad1[128];
+  char arg[AOT_CALL_ARG_CAP][32];
+  aot_emit_pad_next(pad1, sizeof(pad1), pad);
+
+  fprintf(f, "%sif (STEPS_ITRS_LIM == 0) {\n", pad);
+  for (u32 i = 0; i < argc; i++) {
+    aot_emit_tmp(arg[i], sizeof(arg[i]), "arg", tmp);
+    aot_emit_expr(f, args[i], sub, arg[i], pad1, tmp);
+  }
+  fprintf(f, "%sreturn %s(", pad1, fun_name);
+  for (u32 i = argc; i > 0; i--) {
+    if (i != argc) {
+      fprintf(f, ", ");
+    }
+    fprintf(f, "%s", arg[i - 1]);
+  }
+  fprintf(f, ");\n");
+  fprintf(f, "%s}\n", pad);
+  return 1;
 }
 
 // Emits one expression into a temporary and returns it.
@@ -771,7 +994,7 @@ fn void aot_emit_spine_lam(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 
 }
 
 // Emits one MAT spine node.
-fn void aot_emit_spine_mat(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
+fn void aot_emit_spine_mat_arg(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp, const char *arg_in) {
   Term term    = heap_read(loc);
   u64  mat_loc = term_val(term);
   u64  hit_loc = mat_loc + 0;
@@ -791,10 +1014,14 @@ fn void aot_emit_spine_mat(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 
   aot_emit_pad_next(pad3, sizeof(pad3), pad2);
   aot_emit_pad_next(pad4, sizeof(pad4), pad3);
 
-  fprintf(f, "%sTerm %s = aot_pop_app_arg(stack, sp, sb);\n", pad, arg);
-  fprintf(f, "%sif (!%s) {\n", pad, arg);
-  aot_emit_ret_fallback(f, loc, sub, pad1);
-  fprintf(f, "%s}\n", pad);
+  if (arg_in == NULL) {
+    fprintf(f, "%sTerm %s = aot_pop_app_arg(stack, sp, sb);\n", pad, arg);
+    fprintf(f, "%sif (!%s) {\n", pad, arg);
+    aot_emit_ret_fallback(f, loc, sub, pad1);
+    fprintf(f, "%s}\n", pad);
+  } else {
+    fprintf(f, "%sTerm %s = %s;\n", pad, arg, arg_in);
+  }
 
   fprintf(f, "%s%s = aot_force(%s);\n", pad, arg, arg);
   fprintf(f, "%su8 %s = term_tag(%s);\n", pad, tag, arg);
@@ -831,6 +1058,11 @@ fn void aot_emit_spine_mat(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 
   fprintf(f, "%s}\n", pad1);
 
   fprintf(f, "%s}\n", pad);
+}
+
+// Emits one MAT spine node.
+fn void aot_emit_spine_mat(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
+  aot_emit_spine_mat_arg(f, loc, sub, pad, tmp, NULL);
 }
 
 // Emits one USE spine node.
@@ -980,6 +1212,10 @@ fn void aot_emit_spine(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp
 
   switch (tag) {
     case APP: {
+      if (aot_emit_spine_direct(f, loc, sub, pad, tmp)) {
+        aot_emit_spine_app(f, loc, sub, pad, tmp);
+        return;
+      }
       aot_emit_spine_app(f, loc, sub, pad, tmp);
       return;
     }
@@ -1056,6 +1292,19 @@ fn void aot_emit_expr(FILE *f, u64 loc, AotSubst sub, const char *out, const cha
       return;
     }
     case C01 ... C16: {
+      u32 ctr_id  = 0;
+      u32 reps    = 0;
+      u64 bod_loc = 0;
+      if (aot_collect_ctr1_chain(loc, &ctr_id, &reps, &bod_loc) && reps > 1) {
+        char bod[32];
+        aot_emit_tmp(bod, sizeof(bod), "bod", tmp);
+        aot_emit_expr(f, bod_loc, sub, bod, pad, tmp);
+        fprintf(f, "%sTerm %s = aot_wrap_ctr1(", pad, out);
+        aot_emit_ctr_id(f, ctr_id);
+        fprintf(f, ", %u, %s);\n", reps, bod);
+        return;
+      }
+
       u32 ari = (u32)(tag - C00);
       u64 ctr = term_val(term);
 
@@ -1219,94 +1468,247 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
 
   char fun_name[256];
   aot_emit_fun_name(fun_name, sizeof(fun_name), name);
+  char zero_tok[320];
+  char succ_tok[320];
+  aot_emit_const_name(zero_tok, sizeof(zero_tok), "C", loop.zero_id);
+  aot_emit_const_name(succ_tok, sizeof(succ_tok), "C", loop.succ_id);
 
-  fprintf(f, "// Compiled function for @%s (id %u).\n", name, id);
-  fprintf(f, "static Term %s(Term *stack, u32 *sp, u32 sb) {\n", fun_name);
-  fprintf(f, "  u32 n_0 = 0;\n");
-  fprintf(f, "  Term a_0 = aot_pop_app_arg(stack, sp, sb);\n");
-  fprintf(f, "  if (!a_0) {\n");
-  fprintf(f, "    return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n", (unsigned long long)loop.root_loc);
-  fprintf(f, "  }\n");
-  fprintf(f, "  a_0 = aot_force(a_0);\n");
-  fprintf(f, "  switch (term_tag(a_0)) {\n");
-  aot_emit_ctr_cases(f, "    ");
-  fprintf(f, "      switch (term_ext(a_0)) {\n");
+  if (loop.tail_acc) {
+    fprintf(f,
+      "// Direct helper for @%s with 2 args.\n"
+      "static Term %s_2(Term a_0, Term b_0) {\n"
+      "add_loop_2:\n"
+      "  a_0 = aot_force(a_0);\n"
+      "  switch (term_tag(a_0)) {\n"
+      "    case C00: case C01: case C02: case C03: case C04:\n"
+      "    case C05: case C06: case C07: case C08: case C09:\n"
+      "    case C10: case C11: case C12: case C13: case C14:\n"
+      "    case C15: case C16: {\n"
+      "      switch (term_ext(a_0)) {\n"
+      "        case %s: {\n"
+      "          aot_itrs_add(2);\n"
+      "          return b_0;\n"
+      "        }\n"
+      "        case %s: {\n"
+      "          aot_itrs_add(4);\n"
+      "          a_0 = heap_read(term_val(a_0) + 0);\n"
+      "          b_0 = aot_wrap_ctr1(%s, 1, b_0);\n"
+      "          goto add_loop_2;\n"
+      "        }\n"
+      "        default: {\n"
+      "          aot_itrs_add(2);\n"
+      "          Term ret_0 = term_new_app(term_new_num(0), b_0);\n"
+      "          return ret_0;\n"
+      "        }\n"
+      "      }\n"
+      "    }\n"
+      "    default: {\n"
+      "      Term fun_0 = aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+      "      Term app_0 = term_new_app(fun_0, a_0);\n"
+      "      Term ret_0 = term_new_app(app_0, b_0);\n"
+      "      return ret_0;\n"
+      "    }\n"
+      "  }\n"
+      "}\n\n",
+      name,
+      fun_name,
+      zero_tok,
+      succ_tok,
+      succ_tok,
+      (unsigned long long)loop.root_loc);
 
-  fprintf(f, "        case ");
-  aot_emit_ctr_id(f, loop.zero_id);
-  fprintf(f, ": {\n");
-  fprintf(f, "          Term b_0 = aot_pop_app_arg(stack, sp, sb);\n");
-  fprintf(f, "          if (!b_0) {\n");
-  fprintf(f, "            return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n", (unsigned long long)loop.zero_lam_loc);
-  fprintf(f, "          }\n");
-  fprintf(f, "          return b_0;\n");
-  fprintf(f, "        }\n");
+    fprintf(f,
+      "// Compiled function for @%s (id %u).\n"
+      "static Term %s(Term *stack, u32 *sp, u32 sb) {\n"
+      "  Term a_0 = aot_pop_app_arg(stack, sp, sb);\n"
+      "  if (!a_0) {\n"
+      "    return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+      "  }\n"
+      "  a_0 = aot_force(a_0);\n"
+      "  switch (term_tag(a_0)) {\n"
+      "    case C00: case C01: case C02: case C03: case C04:\n"
+      "    case C05: case C06: case C07: case C08: case C09:\n"
+      "    case C10: case C11: case C12: case C13: case C14:\n"
+      "    case C15: case C16: {\n"
+      "      switch (term_ext(a_0)) {\n"
+      "        case %s: {\n"
+      "          Term b_0 = aot_pop_app_arg(stack, sp, sb);\n"
+      "          if (!b_0) {\n"
+      "            aot_itrs_inc();\n"
+      "            return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+      "          }\n"
+      "          aot_itrs_add(2);\n"
+      "          return b_0;\n"
+      "        }\n"
+      "        case %s: {\n"
+      "          Term a_1 = heap_read(term_val(a_0) + 0);\n"
+      "          Term b_0 = aot_pop_app_arg(stack, sp, sb);\n"
+      "          if (!b_0) {\n"
+      "            aot_itrs_add(3);\n"
+      "            u64 ls0 = heap_alloc(2);\n"
+      "            heap_set(ls0 + 0, term_sub_set(a_1, 1));\n"
+      "            heap_set(ls0 + 1, term_new(0, NUM, 0, 0ULL));\n"
+      "            return aot_fallback_alo_ls(%lluULL, 1, ls0);\n"
+      "          }\n"
+      "          return %s_2(a_0, b_0);\n"
+      "        }\n"
+      "        default: {\n"
+      "          aot_itrs_add(2);\n"
+      "          return term_new_num(0);\n"
+      "        }\n"
+      "      }\n"
+      "    }\n"
+      "    default: {\n"
+      "      return term_new_app(aot_fallback_alo_ls(%lluULL, 0, 0ULL), a_0);\n"
+      "    }\n"
+      "  }\n"
+      "}\n\n",
+      name,
+      id,
+      fun_name,
+      (unsigned long long)loop.root_loc,
+      zero_tok,
+      (unsigned long long)loop.zero_lam_loc,
+      succ_tok,
+      (unsigned long long)loop.succ_lam_loc,
+      fun_name,
+      (unsigned long long)loop.root_loc);
+    return;
+  }
 
-  fprintf(f, "        case ");
-  aot_emit_ctr_id(f, loop.succ_id);
-  fprintf(f, ": {\n");
-  fprintf(f, "          Term a_1 = heap_read(term_val(a_0) + 0);\n");
-  fprintf(f, "          Term b_0 = aot_pop_app_arg(stack, sp, sb);\n");
-  fprintf(f, "          if (!b_0) {\n");
-  fprintf(f, "            u64 ls0 = heap_alloc(2);\n");
-  fprintf(f, "            heap_set(ls0 + 0, term_sub_set(a_1, 1));\n");
-  fprintf(f, "            heap_set(ls0 + 1, term_new(0, NUM, 0, 0ULL));\n");
-  fprintf(f, "            return aot_fallback_alo_ls(%lluULL, 1, ls0);\n", (unsigned long long)loop.succ_lam_loc);
-  fprintf(f, "          }\n");
-  fprintf(f, "          n_0 = 1;\n");
-  fprintf(f, "          a_0 = a_1;\n");
-  fprintf(f, "add_loop:\n");
-  fprintf(f, "          a_0 = aot_force(a_0);\n");
-  fprintf(f, "          switch (term_tag(a_0)) {\n");
-  aot_emit_ctr_cases(f, "            ");
-  fprintf(f, "              switch (term_ext(a_0)) {\n");
+  fprintf(f,
+    "// Direct helper for @%s with 2 args.\n"
+    "static Term %s_2(Term a_0, Term b_0) {\n"
+    "  u32 n_0 = 0;\n"
+    "  a_0 = aot_force(a_0);\n"
+    "  switch (term_tag(a_0)) {\n"
+    "    case C00: case C01: case C02: case C03: case C04:\n"
+    "    case C05: case C06: case C07: case C08: case C09:\n"
+    "    case C10: case C11: case C12: case C13: case C14:\n"
+    "    case C15: case C16: {\n"
+    "      switch (term_ext(a_0)) {\n"
+    "        case %s: {\n"
+    "          aot_itrs_add(2);\n"
+    "          return b_0;\n"
+    "        }\n"
+    "        case %s: {\n"
+    "          a_0 = heap_read(term_val(a_0) + 0);\n"
+    "          n_0 = 1;\n"
+    "add_loop_2:\n"
+    "          a_0 = aot_force(a_0);\n"
+    "          switch (term_tag(a_0)) {\n"
+    "            case C00: case C01: case C02: case C03: case C04:\n"
+    "            case C05: case C06: case C07: case C08: case C09:\n"
+    "            case C10: case C11: case C12: case C13: case C14:\n"
+    "            case C15: case C16: {\n"
+    "              switch (term_ext(a_0)) {\n"
+    "                case %s: {\n"
+    "                  aot_itrs_add(4ULL * (u64)n_0 + 2ULL);\n"
+    "                  return aot_wrap_ctr1(%s, n_0, b_0);\n"
+    "                }\n"
+    "                case %s: {\n"
+    "                  a_0 = heap_read(term_val(a_0) + 0);\n"
+    "                  n_0 = n_0 + 1;\n"
+    "                  goto add_loop_2;\n"
+    "                }\n"
+    "                default: {\n"
+    "                  aot_itrs_add(4ULL * (u64)n_0 + 2ULL);\n"
+    "                  Term ret_0 = term_new_app(term_new_num(0), b_0);\n"
+    "                  return aot_wrap_ctr1(%s, n_0, ret_0);\n"
+    "                }\n"
+    "              }\n"
+    "            }\n"
+    "            default: {\n"
+    "              aot_itrs_add(4ULL * (u64)n_0);\n"
+    "              Term fun_0 = aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+    "              Term app_0 = term_new_app(fun_0, a_0);\n"
+    "              Term ret_0 = term_new_app(app_0, b_0);\n"
+    "              return aot_wrap_ctr1(%s, n_0, ret_0);\n"
+    "            }\n"
+    "          }\n"
+    "        }\n"
+    "        default: {\n"
+    "          aot_itrs_add(2);\n"
+    "          return term_new_app(term_new_num(0), b_0);\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "    default: {\n"
+    "      Term fun_0 = aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+    "      Term app_0 = term_new_app(fun_0, a_0);\n"
+    "      Term ret_0 = term_new_app(app_0, b_0);\n"
+    "      return ret_0;\n"
+    "    }\n"
+    "  }\n"
+    "}\n\n",
+    name,
+    fun_name,
+    zero_tok,
+    succ_tok,
+    zero_tok,
+    succ_tok,
+    succ_tok,
+    succ_tok,
+    (unsigned long long)loop.root_loc,
+    succ_tok,
+    (unsigned long long)loop.root_loc);
 
-  fprintf(f, "                case ");
-  aot_emit_ctr_id(f, loop.zero_id);
-  fprintf(f, ": {\n");
-  fprintf(f, "                  return aot_wrap_ctr1(");
-  aot_emit_ctr_id(f, loop.succ_id);
-  fprintf(f, ", n_0, b_0);\n");
-  fprintf(f, "                }\n");
-
-  fprintf(f, "                case ");
-  aot_emit_ctr_id(f, loop.succ_id);
-  fprintf(f, ": {\n");
-  fprintf(f, "                  a_0 = heap_read(term_val(a_0) + 0);\n");
-  fprintf(f, "                  n_0 = n_0 + 1;\n");
-  fprintf(f, "                  goto add_loop;\n");
-  fprintf(f, "                }\n");
-
-  fprintf(f, "                default: {\n");
-  fprintf(f, "                  Term ret_0 = term_new_app(term_new_num(0), b_0);\n");
-  fprintf(f, "                  return aot_wrap_ctr1(");
-  aot_emit_ctr_id(f, loop.succ_id);
-  fprintf(f, ", n_0, ret_0);\n");
-  fprintf(f, "                }\n");
-
-  fprintf(f, "              }\n");
-  fprintf(f, "            }\n");
-  fprintf(f, "            default: {\n");
-  fprintf(f, "              Term fun_0 = aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n", (unsigned long long)loop.root_loc);
-  fprintf(f, "              Term app_0 = term_new_app(fun_0, a_0);\n");
-  fprintf(f, "              Term ret_0 = term_new_app(app_0, b_0);\n");
-  fprintf(f, "              return aot_wrap_ctr1(");
-  aot_emit_ctr_id(f, loop.succ_id);
-  fprintf(f, ", n_0, ret_0);\n");
-  fprintf(f, "            }\n");
-  fprintf(f, "          }\n");
-  fprintf(f, "        }\n");
-
-  fprintf(f, "        default: {\n");
-  fprintf(f, "          return term_new_num(0);\n");
-  fprintf(f, "        }\n");
-  fprintf(f, "      }\n");
-  fprintf(f, "    }\n");
-  fprintf(f, "    default: {\n");
-  fprintf(f, "      return term_new_app(aot_fallback_alo_ls(%lluULL, 0, 0ULL), a_0);\n", (unsigned long long)loop.root_loc);
-  fprintf(f, "    }\n");
-  fprintf(f, "  }\n");
-  fprintf(f, "}\n\n");
+  fprintf(f,
+    "// Compiled function for @%s (id %u).\n"
+    "static Term %s(Term *stack, u32 *sp, u32 sb) {\n"
+    "  Term a_0 = aot_pop_app_arg(stack, sp, sb);\n"
+    "  if (!a_0) {\n"
+    "    return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+    "  }\n"
+    "  a_0 = aot_force(a_0);\n"
+    "  switch (term_tag(a_0)) {\n"
+    "    case C00: case C01: case C02: case C03: case C04:\n"
+    "    case C05: case C06: case C07: case C08: case C09:\n"
+    "    case C10: case C11: case C12: case C13: case C14:\n"
+    "    case C15: case C16: {\n"
+    "      switch (term_ext(a_0)) {\n"
+    "        case %s: {\n"
+    "          Term b_0 = aot_pop_app_arg(stack, sp, sb);\n"
+    "          if (!b_0) {\n"
+    "            aot_itrs_inc();\n"
+    "            return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+    "          }\n"
+    "          return %s_2(a_0, b_0);\n"
+    "        }\n"
+    "        case %s: {\n"
+    "          Term a_1 = heap_read(term_val(a_0) + 0);\n"
+    "          Term b_0 = aot_pop_app_arg(stack, sp, sb);\n"
+    "          if (!b_0) {\n"
+    "            aot_itrs_add(3);\n"
+    "            u64 ls0 = heap_alloc(2);\n"
+    "            heap_set(ls0 + 0, term_sub_set(a_1, 1));\n"
+    "            heap_set(ls0 + 1, term_new(0, NUM, 0, 0ULL));\n"
+    "            return aot_fallback_alo_ls(%lluULL, 1, ls0);\n"
+    "          }\n"
+    "          return %s_2(a_0, b_0);\n"
+    "        }\n"
+    "        default: {\n"
+    "          aot_itrs_add(2);\n"
+    "          return term_new_num(0);\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "    default: {\n"
+    "      return term_new_app(aot_fallback_alo_ls(%lluULL, 0, 0ULL), a_0);\n"
+    "    }\n"
+    "  }\n"
+    "}\n\n",
+    name,
+    id,
+    fun_name,
+    (unsigned long long)loop.root_loc,
+    zero_tok,
+    (unsigned long long)loop.zero_lam_loc,
+    fun_name,
+    succ_tok,
+    (unsigned long long)loop.succ_lam_loc,
+    fun_name,
+    (unsigned long long)loop.root_loc);
 }
 
 // Emits one loop-specialized nat-to-u32 definition.
@@ -1318,44 +1720,203 @@ fn void aot_emit_def_loop_u32(FILE *f, u32 id, AotLoopU32 loop) {
 
   char fun_name[256];
   aot_emit_fun_name(fun_name, sizeof(fun_name), name);
+  char zero_tok[320];
+  char succ_tok[320];
+  aot_emit_const_name(zero_tok, sizeof(zero_tok), "C", loop.zero_id);
+  aot_emit_const_name(succ_tok, sizeof(succ_tok), "C", loop.succ_id);
 
-  fprintf(f, "// Compiled function for @%s (id %u).\n", name, id);
-  fprintf(f, "static Term %s(Term *stack, u32 *sp, u32 sb) {\n", fun_name);
-  fprintf(f, "  u32 n_0 = 0;\n");
-  fprintf(f, "  Term a_0 = aot_pop_app_arg(stack, sp, sb);\n");
-  fprintf(f, "  if (!a_0) {\n");
-  fprintf(f, "    return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n", (unsigned long long)loop.root_loc);
-  fprintf(f, "  }\n");
-  fprintf(f, "u32_loop:\n");
-  fprintf(f, "  a_0 = aot_force(a_0);\n");
-  fprintf(f, "  switch (term_tag(a_0)) {\n");
-  aot_emit_ctr_cases(f, "    ");
-  fprintf(f, "      switch (term_ext(a_0)) {\n");
+  if (loop.tail_acc) {
+    fprintf(f,
+      "// Direct helper for @%s with 2 args.\n"
+      "static Term %s_2(Term a_0, Term b_0) {\n"
+      "u32_loop_2:\n"
+      "  a_0 = aot_force(a_0);\n"
+      "  switch (term_tag(a_0)) {\n"
+      "    case C00: case C01: case C02: case C03: case C04:\n"
+      "    case C05: case C06: case C07: case C08: case C09:\n"
+      "    case C10: case C11: case C12: case C13: case C14:\n"
+      "    case C15: case C16: {\n"
+      "      switch (term_ext(a_0)) {\n"
+      "        case %s: {\n"
+      "          aot_itrs_add(2);\n"
+      "          return b_0;\n"
+      "        }\n"
+      "        case %s: {\n"
+      "          aot_itrs_add(4);\n"
+      "          Term x_0 = term_new_num((u32)1ULL);\n"
+      "          Term y_0 = b_0;\n"
+      "          switch (term_tag(x_0)) {\n"
+      "            case NUM: {\n"
+      "              switch (term_tag(y_0)) {\n"
+      "                case NUM: {\n"
+      "                  aot_itrs_inc();\n"
+      "                  b_0 = term_new_num(term_op2_u32(0, (u32)term_val(x_0), (u32)term_val(y_0)));\n"
+      "                  break;\n"
+      "                }\n"
+      "                default: {\n"
+      "                  b_0 = term_new_op2(0, x_0, y_0);\n"
+      "                  break;\n"
+      "                }\n"
+      "              }\n"
+      "              break;\n"
+      "            }\n"
+      "            default: {\n"
+      "              b_0 = term_new_op2(0, x_0, y_0);\n"
+      "              break;\n"
+      "            }\n"
+      "          }\n"
+      "          a_0 = heap_read(term_val(a_0) + 0);\n"
+      "          goto u32_loop_2;\n"
+      "        }\n"
+      "        default: {\n"
+      "          aot_itrs_add(2);\n"
+      "          Term ret_0 = term_new_app(term_new_num(0), b_0);\n"
+      "          return ret_0;\n"
+      "        }\n"
+      "      }\n"
+      "    }\n"
+      "    default: {\n"
+      "      Term fun_0 = aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+      "      Term app_0 = term_new_app(fun_0, a_0);\n"
+      "      Term ret_0 = term_new_app(app_0, b_0);\n"
+      "      return ret_0;\n"
+      "    }\n"
+      "  }\n"
+      "}\n\n",
+      name,
+      fun_name,
+      zero_tok,
+      succ_tok,
+      (unsigned long long)loop.root_loc);
 
-  fprintf(f, "        case ");
-  aot_emit_ctr_id(f, loop.zero_id);
-  fprintf(f, ": {\n");
-  fprintf(f, "          return term_new_num(n_0);\n");
-  fprintf(f, "        }\n");
+    fprintf(f,
+      "// Compiled function for @%s (id %u).\n"
+      "static Term %s(Term *stack, u32 *sp, u32 sb) {\n"
+      "  Term a_0 = aot_pop_app_arg(stack, sp, sb);\n"
+      "  if (!a_0) {\n"
+      "    return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+      "  }\n"
+      "  a_0 = aot_force(a_0);\n"
+      "  switch (term_tag(a_0)) {\n"
+      "    case C00: case C01: case C02: case C03: case C04:\n"
+      "    case C05: case C06: case C07: case C08: case C09:\n"
+      "    case C10: case C11: case C12: case C13: case C14:\n"
+      "    case C15: case C16: {\n"
+      "      switch (term_ext(a_0)) {\n"
+      "        case %s: {\n"
+      "          Term b_0 = aot_pop_app_arg(stack, sp, sb);\n"
+      "          if (!b_0) {\n"
+      "            aot_itrs_inc();\n"
+      "            return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+      "          }\n"
+      "          aot_itrs_add(2);\n"
+      "          return b_0;\n"
+      "        }\n"
+      "        case %s: {\n"
+      "          Term a_1 = heap_read(term_val(a_0) + 0);\n"
+      "          Term b_0 = aot_pop_app_arg(stack, sp, sb);\n"
+      "          if (!b_0) {\n"
+      "            aot_itrs_add(3);\n"
+      "            u64 ls0 = heap_alloc(2);\n"
+      "            heap_set(ls0 + 0, term_sub_set(a_1, 1));\n"
+      "            heap_set(ls0 + 1, term_new(0, NUM, 0, 0ULL));\n"
+      "            return aot_fallback_alo_ls(%lluULL, 1, ls0);\n"
+      "          }\n"
+      "          return %s_2(a_0, b_0);\n"
+      "        }\n"
+      "        default: {\n"
+      "          aot_itrs_add(2);\n"
+      "          return term_new_num(0);\n"
+      "        }\n"
+      "      }\n"
+      "    }\n"
+      "    default: {\n"
+      "      return term_new_app(aot_fallback_alo_ls(%lluULL, 0, 0ULL), a_0);\n"
+      "    }\n"
+      "  }\n"
+      "}\n\n",
+      name,
+      id,
+      fun_name,
+      (unsigned long long)loop.root_loc,
+      zero_tok,
+      (unsigned long long)loop.zero_lam_loc,
+      succ_tok,
+      (unsigned long long)loop.succ_lam_loc,
+      fun_name,
+      (unsigned long long)loop.root_loc);
+    return;
+  }
 
-  fprintf(f, "        case ");
-  aot_emit_ctr_id(f, loop.succ_id);
-  fprintf(f, ": {\n");
-  fprintf(f, "          a_0 = heap_read(term_val(a_0) + 0);\n");
-  fprintf(f, "          n_0 = n_0 + 1;\n");
-  fprintf(f, "          goto u32_loop;\n");
-  fprintf(f, "        }\n");
+  fprintf(f,
+    "// Compiled function for @%s (id %u).\n"
+    "static Term %s(Term *stack, u32 *sp, u32 sb) {\n"
+    "  u32 n_0 = 0;\n"
+    "  Term a_0 = aot_pop_app_arg(stack, sp, sb);\n"
+    "  if (!a_0) {\n"
+    "    return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
+    "  }\n"
+    "u32_loop:\n"
+    "  a_0 = aot_force(a_0);\n"
+    "  switch (term_tag(a_0)) {\n"
+    "    case C00: case C01: case C02: case C03: case C04:\n"
+    "    case C05: case C06: case C07: case C08: case C09:\n"
+    "    case C10: case C11: case C12: case C13: case C14:\n"
+    "    case C15: case C16: {\n"
+    "      switch (term_ext(a_0)) {\n"
+    "        case %s: {\n"
+    "          aot_itrs_add(4ULL * (u64)n_0 + 1ULL);\n"
+    "          return term_new_num(n_0);\n"
+    "        }\n"
+    "        case %s: {\n"
+    "          a_0 = heap_read(term_val(a_0) + 0);\n"
+    "          n_0 = n_0 + 1;\n"
+    "          goto u32_loop;\n"
+    "        }\n"
+    "        default: {\n"
+    "          aot_itrs_add(4ULL * (u64)n_0 + 2ULL);\n"
+    "          return term_new_num(n_0);\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "    default: {\n"
+    "      aot_itrs_add(3ULL * (u64)n_0);\n"
+    "      Term ret_0 = term_new_app(aot_fallback_alo_ls(%lluULL, 0, 0ULL), a_0);\n"
+    "      return aot_wrap_op2_num_lhs(0, 1, n_0, ret_0);\n"
+    "    }\n"
+    "  }\n"
+    "}\n\n",
+    name,
+    id,
+    fun_name,
+    (unsigned long long)loop.root_loc,
+    zero_tok,
+    succ_tok,
+    (unsigned long long)loop.root_loc);
+}
 
-  fprintf(f, "        default: {\n");
-  fprintf(f, "          return term_new_num(n_0);\n");
-  fprintf(f, "        }\n");
-  fprintf(f, "      }\n");
-  fprintf(f, "    }\n");
-  fprintf(f, "    default: {\n");
-  fprintf(f, "      Term ret_0 = term_new_app(aot_fallback_alo_ls(%lluULL, 0, 0ULL), a_0);\n", (unsigned long long)loop.root_loc);
-  fprintf(f, "      return aot_wrap_op2_num_lhs(0, 1, n_0, ret_0);\n");
-  fprintf(f, "    }\n");
-  fprintf(f, "  }\n");
+// Emits one direct unary MAT helper.
+fn void aot_emit_def_direct_mat1(FILE *f, u32 id) {
+  if (!aot_emit_has_direct_mat1(id)) {
+    return;
+  }
+
+  char *name = table_get(id);
+  if (name == NULL) {
+    return;
+  }
+
+  char fun_name[256];
+  aot_emit_fun_name(fun_name, sizeof(fun_name), name);
+
+  fprintf(f, "// Direct helper for @%s with 1 arg.\n", name);
+  fprintf(f, "static Term %s_1(Term x_0, Term *stack, u32 *sp, u32 sb) {\n", fun_name);
+
+  AotSubst sub = {0};
+  sub.self_id = id;
+  u32 tmp = 0;
+  aot_emit_spine_mat_arg(f, BOOK[id], sub, "  ", &tmp, "x_0");
+
   fprintf(f, "}\n\n");
 }
 
@@ -1372,6 +1933,17 @@ fn void aot_emit_decl(FILE *f, u32 id) {
 
   char fun_name[256];
   aot_emit_fun_name(fun_name, sizeof(fun_name), name);
+  AotLoopAdd loop_add;
+  AotLoopU32 loop_u32;
+  if (aot_match_loop_add(BOOK[id], id, &loop_add)) {
+    fprintf(f, "static Term %s_2(Term a_0, Term b_0);\n", fun_name);
+  }
+  if (aot_match_loop_u32(BOOK[id], id, &loop_u32) && loop_u32.tail_acc) {
+    fprintf(f, "static Term %s_2(Term a_0, Term b_0);\n", fun_name);
+  }
+  if (aot_emit_has_direct_mat1(id)) {
+    fprintf(f, "static Term %s_1(Term x_0, Term *stack, u32 *sp, u32 sb);\n", fun_name);
+  }
   fprintf(f, "static Term %s(Term *stack, u32 *sp, u32 sb);\n", fun_name);
 }
 
@@ -1401,6 +1973,8 @@ fn void aot_emit_def(FILE *f, u32 id) {
     aot_emit_def_loop_u32(f, id, loop_u32);
     return;
   }
+
+  aot_emit_def_direct_mat1(f, id);
 
   fprintf(f, "// Compiled function for @%s (id %u).\n", name, id);
   fprintf(f, "static Term %s(Term *stack, u32 *sp, u32 sb) {\n", fun_name);

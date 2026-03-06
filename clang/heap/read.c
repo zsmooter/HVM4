@@ -1,4 +1,7 @@
 fn Term heap_read(u64 loc) {
+  if (__builtin_expect(THREAD_COUNT == 1, 1)) {
+    return HEAP[loc];
+  }
   Term term = __atomic_load_n(&HEAP[loc], __ATOMIC_RELAXED);
   if (__builtin_expect(term != 0, 1)) {
     return term;
