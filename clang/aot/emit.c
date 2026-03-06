@@ -7,7 +7,7 @@
 // - Each top-level definition compiles to one case-tree function.
 // - Spine nodes (LAM, MAT, SWI, DUP, APP, REF) are emitted as direct control flow.
 // - Leaf/tail expressions are emitted by a separate expression builder.
-// - Fallback reconstructs ALO with an explicit LAM/DUP lexical binding mask.
+// - Fallback reconstructs ALO from the current substitution-list chain.
 
 fn char *table_get(u32 id);
 
@@ -18,11 +18,6 @@ fn char *table_get(u32 id);
 static int AOT_EMIT_ITRS = 1;
 // Hard stop to avoid emitter stack blowups on very deep literal trees.
 #define AOT_EMIT_TMP_LIM 8192
-// Hard stop to avoid compiling giant non-case-tree definitions.
-#define AOT_EMIT_SCAN_LIM 16384
-
-// Per-definition compile eligibility cache.
-static u8 AOT_EMIT_OK[BOOK_CAP] = {0};
 
 // Returns 1 when this AOT build needs interaction counting.
 fn int aot_emit_counting(const AotBuildCfg *cfg) {
@@ -30,73 +25,6 @@ fn int aot_emit_counting(const AotBuildCfg *cfg) {
     return 1;
   }
   return cfg->eval.stats || cfg->eval.silent || cfg->eval.step_by_step;
-}
-
-// Returns 1 if one static tag is eligible for case-tree AOT.
-fn int aot_emit_tag_ok(u8 tag) {
-  switch (tag) {
-    case LAM:
-    case MAT:
-    case SWI:
-    case DUP:
-    case APP:
-    case REF:
-    case NUM:
-    case ERA:
-    case ANY:
-    case NAM:
-    case VAR:
-    case BJV:
-    case BJ0:
-    case BJ1:
-    case DP0:
-    case DP1:
-    case C00 ... C16: {
-      return 1;
-    }
-    default: {
-      return 0;
-    }
-  }
-}
-
-// Checks whether one definition is within the current supported case-tree subset.
-fn int aot_emit_scan_ok(u64 loc, u32 *budget) {
-  if (*budget == 0) {
-    return 0;
-  }
-  *budget = *budget - 1;
-
-  Term term = heap_read(loc);
-  u8   tag  = term_tag(term);
-  if (!aot_emit_tag_ok(tag)) {
-    return 0;
-  }
-
-  u32 ari = term_arity(term);
-  u64 val = term_val(term);
-  for (u32 i = 0; i < ari; i++) {
-    if (!aot_emit_scan_ok(val + i, budget)) {
-      return 0;
-    }
-  }
-
-  return 1;
-}
-
-// Precomputes the compile eligibility bitset for current BOOK.
-fn void aot_emit_compute_ok(void) {
-  for (u32 id = 0; id < BOOK_CAP; id++) {
-    AOT_EMIT_OK[id] = 0;
-  }
-
-  for (u32 id = 0; id < TABLE.len; id++) {
-    if (BOOK[id] == 0) {
-      continue;
-    }
-    u32 budget = AOT_EMIT_SCAN_LIM;
-    AOT_EMIT_OK[id] = (u8)aot_emit_scan_ok(BOOK[id], &budget);
-  }
 }
 
 // Emits one `aot_itrs_inc()` line if counting is enabled.
@@ -402,14 +330,15 @@ fn void aot_emit_named_consts(FILE *f) {
 // Emit Context
 // ------------
 
-#define AOT_BIND_LAM 1
-#define AOT_BIND_DUP 2
+#define AOT_SUB_LAM 1
+#define AOT_SUB_DUP 2
 
 typedef struct {
-  u32 dep;
-  u8  kind[AOT_ENV_CAP];
-  u32 lab[AOT_ENV_CAP];
-} AotEmitEnv;
+  u32 len;
+  u32 self_id;
+  u8  kind[AOT_SUB_CAP];
+  u32 lab[AOT_SUB_CAP];
+} AotSubst;
 
 // Emits one source-map style comment for current strict WNF position.
 fn void aot_emit_wnf_comment(FILE *f, u64 loc, const char *pad) {
@@ -418,126 +347,113 @@ fn void aot_emit_wnf_comment(FILE *f, u64 loc, const char *pad) {
   fprintf(f, "\n");
 }
 
-// Emits one lexical environment value pair: `<len>, <ptr>`.
-fn void aot_emit_env_vals(FILE *f, AotEmitEnv env) {
-  if (env.dep == 0) {
-    fprintf(f, "0, NULL");
-    return;
+// Emits one substitution-list entry allocation for binder `idx`.
+fn void aot_emit_subst_entry(FILE *f, u32 idx, const char *val, const char *pad) {
+  fprintf(f, "%su64 ls%u = heap_alloc(2);\n", pad, idx);
+  fprintf(f, "%sheap_set(ls%u + 0, %s);\n", pad, idx, val);
+  fprintf(f, "%sheap_set(ls%u + 1, term_new(0, NUM, 0, ", pad, idx);
+  if (idx == 0) {
+    fprintf(f, "0ULL");
+  } else {
+    fprintf(f, "ls%u", idx - 1);
   }
-
-  fprintf(f, "%u, (const Term[]){", env.dep);
-  for (u32 i = 0; i < env.dep; i++) {
-    if (i > 0) {
-      fprintf(f, ", ");
-    }
-    if (env.kind[i] == AOT_BIND_DUP) {
-      fprintf(f, "(l%u == 0 ? x%u : heap_read(l%u))", i, i, i);
-    } else {
-      fprintf(f, "x%u", i);
-    }
-  }
-  fprintf(f, "}");
+  fprintf(f, "));\n");
 }
 
-// Computes one lexical SUB-bit mask from LAM vs DUP bindings.
-fn u16 aot_emit_env_sub_mask(AotEmitEnv env) {
-  u16 mask = 0;
-  for (u32 i = 0; i < env.dep; i++) {
-    if (env.kind[i] == AOT_BIND_LAM) {
-      mask |= (u16)(1u << i);
-    }
+// Emits one ALO fallback expression for current static term and substitution context.
+fn void aot_emit_fallback_expr(FILE *f, u64 loc, AotSubst sub) {
+  fprintf(f, "aot_fallback_alo_ls(%lluULL, %u, ", (unsigned long long)loc, sub.len);
+  if (sub.len == 0) {
+    fprintf(f, "0ULL");
+  } else {
+    fprintf(f, "ls%u", sub.len - 1);
   }
-  return mask;
-}
-
-// Emits one ALO fallback expression for current static term and lexical env.
-fn void aot_emit_fallback_expr(FILE *f, u64 loc, AotEmitEnv env) {
-  u16 sub_mask = aot_emit_env_sub_mask(env);
-  fprintf(f, "aot_fallback_alo_ctx(%lluULL, ", (unsigned long long)loc);
-  aot_emit_env_vals(f, env);
-  fprintf(f, ", %uu)", (u32)sub_mask);
+  fprintf(f, ")");
 }
 
 // Emits one return with fallback ALO for current static position.
-fn void aot_emit_ret_fallback(FILE *f, u64 loc, AotEmitEnv env, const char *pad) {
+fn void aot_emit_ret_fallback(FILE *f, u64 loc, AotSubst sub, const char *pad) {
   fprintf(f, "%sreturn ", pad);
-  aot_emit_fallback_expr(f, loc, env);
+  aot_emit_fallback_expr(f, loc, sub);
   fprintf(f, ";\n");
 }
 
-// Emits one return with `(<fallback loc env> arg)`.
-fn void aot_emit_ret_fallback_app(FILE *f, u64 loc, AotEmitEnv env, const char *arg, const char *pad) {
+// Emits one return with `(<fallback loc sub> arg)`.
+fn void aot_emit_ret_fallback_app(FILE *f, u64 loc, AotSubst sub, const char *arg, const char *pad) {
   fprintf(f, "%sreturn term_new_app(", pad);
-  aot_emit_fallback_expr(f, loc, env);
+  aot_emit_fallback_expr(f, loc, sub);
   fprintf(f, ", %s);\n", arg);
 }
 
 // Emit Core
 // ---------
 
-fn void aot_emit_spine(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *tmp);
-fn void aot_emit_expr(FILE *f, u64 loc, AotEmitEnv env, const char *out, const char *pad, u32 *tmp);
+fn void aot_emit_spine(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp);
+fn void aot_emit_expr(FILE *f, u64 loc, AotSubst sub, const char *out, const char *pad, u32 *tmp);
 
 // Emits one expression into a temporary and returns it.
-fn void aot_emit_ret_expr(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *tmp) {
+fn void aot_emit_ret_expr(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
   char ret[32];
   aot_emit_tmp(ret, sizeof(ret), "ret", tmp);
-  aot_emit_expr(f, loc, env, ret, pad, tmp);
+  aot_emit_expr(f, loc, sub, ret, pad, tmp);
   fprintf(f, "%sreturn %s;\n", pad, ret);
 }
 
 // Emits one APP spine node.
-fn void aot_emit_spine_app(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *tmp) {
+fn void aot_emit_spine_app(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
   Term term    = heap_read(loc);
   u64  app_loc = term_val(term);
   u64  fun_loc = app_loc + 0;
   u64  arg_loc = app_loc + 1;
 
   char arg[32];
-  char tag[32];
   aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
-  aot_emit_tmp(tag, sizeof(tag), "tag", tmp);
 
-  aot_emit_expr(f, arg_loc, env, arg, pad, tmp);
+  aot_emit_expr(f, arg_loc, sub, arg, pad, tmp);
 
   fprintf(f, "%saot_push_app_arg(stack, sp, sb, %s);\n", pad, arg);
 
-  aot_emit_spine(f, fun_loc, env, pad, tmp);
+  aot_emit_spine(f, fun_loc, sub, pad, tmp);
 }
 
 // Emits one LAM spine node.
-fn void aot_emit_spine_lam(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *tmp) {
+fn void aot_emit_spine_lam(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
   Term term = heap_read(loc);
 
-  if (env.dep >= AOT_ENV_CAP) {
-    aot_emit_ret_fallback(f, loc, env, pad);
+  if (sub.len >= AOT_SUB_CAP) {
+    aot_emit_ret_fallback(f, loc, sub, pad);
     return;
   }
 
   char x_n[32];
-  snprintf(x_n, sizeof(x_n), "x%u", env.dep);
+  snprintf(x_n, sizeof(x_n), "x%u", sub.len);
 
   fprintf(f, "%sTerm %s = aot_pop_app_arg(stack, sp, sb);\n", pad, x_n);
   fprintf(f, "%sif (!%s) {\n", pad, x_n);
   {
     char pad1[128];
     aot_emit_pad_next(pad1, sizeof(pad1), pad);
-    aot_emit_ret_fallback(f, loc, env, pad1);
+    aot_emit_ret_fallback(f, loc, sub, pad1);
   }
   fprintf(f, "%s}\n", pad);
 
   aot_emit_itrs_inc(f, pad);
+  {
+    char sub_x[64];
+    snprintf(sub_x, sizeof(sub_x), "term_sub_set(%s, 1)", x_n);
+    aot_emit_subst_entry(f, sub.len, sub_x, pad);
+  }
 
-  AotEmitEnv env1 = env;
-  env1.kind[env.dep] = AOT_BIND_LAM;
-  env1.lab[env.dep]  = 0;
-  env1.dep = env.dep + 1;
+  AotSubst sub1 = sub;
+  sub1.kind[sub.len] = AOT_SUB_LAM;
+  sub1.lab[sub.len]  = 0;
+  sub1.len = sub.len + 1;
 
-  aot_emit_spine(f, term_val(term), env1, pad, tmp);
+  aot_emit_spine(f, term_val(term), sub1, pad, tmp);
 }
 
 // Emits one MAT spine node.
-fn void aot_emit_spine_mat(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *tmp) {
+fn void aot_emit_spine_mat(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
   Term term    = heap_read(loc);
   u64  mat_loc = term_val(term);
   u64  hit_loc = mat_loc + 0;
@@ -559,14 +475,11 @@ fn void aot_emit_spine_mat(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u3
 
   fprintf(f, "%sTerm %s = aot_pop_app_arg(stack, sp, sb);\n", pad, arg);
   fprintf(f, "%sif (!%s) {\n", pad, arg);
-  aot_emit_ret_fallback(f, loc, env, pad1);
+  aot_emit_ret_fallback(f, loc, sub, pad1);
   fprintf(f, "%s}\n", pad);
 
+  fprintf(f, "%s%s = aot_eval(%s, sp);\n", pad, arg, arg);
   fprintf(f, "%su8 %s = term_tag(%s);\n", pad, tag, arg);
-  fprintf(f, "%sif (%s < C00 || %s > C16) {\n", pad, tag, tag);
-  fprintf(f, "%s%s = aot_eval(%s, sp);\n", pad1, arg, arg);
-  fprintf(f, "%s%s = term_tag(%s);\n", pad1, tag, arg);
-  fprintf(f, "%s}\n", pad);
   fprintf(f, "%sswitch (%s) {\n", pad, tag);
 
   fprintf(f, "%scase C00: case C01: case C02: case C03: case C04:\n", pad1);
@@ -581,27 +494,68 @@ fn void aot_emit_spine_mat(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u3
   fprintf(f, ": {\n");
   aot_emit_itrs_inc(f, pad4);
   fprintf(f, "%saot_push_fields(stack, sp, sb, %s);\n", pad4, arg);
-  aot_emit_spine(f, hit_loc, env, pad4, tmp);
+  aot_emit_spine(f, hit_loc, sub, pad4, tmp);
   fprintf(f, "%s}\n", pad3);
 
   fprintf(f, "%sdefault: {\n", pad3);
   aot_emit_itrs_inc(f, pad4);
   fprintf(f, "%saot_push_app_arg(stack, sp, sb, %s);\n", pad4, arg);
-  aot_emit_spine(f, mis_loc, env, pad4, tmp);
+  aot_emit_spine(f, mis_loc, sub, pad4, tmp);
   fprintf(f, "%s}\n", pad3);
 
   fprintf(f, "%s}\n", pad2);
   fprintf(f, "%s}\n", pad1);
 
   fprintf(f, "%sdefault: {\n", pad1);
-  aot_emit_ret_fallback_app(f, loc, env, arg, pad2);
+  aot_emit_ret_fallback_app(f, loc, sub, arg, pad2);
+  fprintf(f, "%s}\n", pad1);
+
+  fprintf(f, "%s}\n", pad);
+}
+
+// Emits one USE spine node.
+fn void aot_emit_spine_use(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
+  Term term  = heap_read(loc);
+  u64  f_loc = term_val(term);
+
+  char arg[32];
+  aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
+
+  char pad1[128];
+  char pad2[128];
+  aot_emit_pad_next(pad1, sizeof(pad1), pad);
+  aot_emit_pad_next(pad2, sizeof(pad2), pad1);
+
+  fprintf(f, "%sTerm %s = aot_pop_app_arg(stack, sp, sb);\n", pad, arg);
+  fprintf(f, "%sif (!%s) {\n", pad, arg);
+  aot_emit_ret_fallback(f, loc, sub, pad1);
+  fprintf(f, "%s}\n", pad);
+
+  fprintf(f, "%s%s = aot_eval(%s, sp);\n", pad, arg, arg);
+  fprintf(f, "%sswitch (term_tag(%s)) {\n", pad, arg);
+
+  fprintf(f, "%scase ERA: {\n", pad1);
+  aot_emit_itrs_inc(f, pad2);
+  fprintf(f, "%sTerm ret = term_new_era();\n", pad2);
+  fprintf(f, "%sreturn ret;\n", pad2);
+  fprintf(f, "%s}\n", pad1);
+
+  fprintf(f, "%scase SUP:\n", pad1);
+  fprintf(f, "%scase INC: {\n", pad1);
+  aot_emit_ret_fallback_app(f, loc, sub, arg, pad2);
+  fprintf(f, "%s}\n", pad1);
+
+  fprintf(f, "%sdefault: {\n", pad1);
+  aot_emit_itrs_inc(f, pad2);
+  fprintf(f, "%saot_push_app_arg(stack, sp, sb, %s);\n", pad2, arg);
+  aot_emit_spine(f, f_loc, sub, pad2, tmp);
   fprintf(f, "%s}\n", pad1);
 
   fprintf(f, "%s}\n", pad);
 }
 
 // Emits one SWI spine node.
-fn void aot_emit_spine_swi(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *tmp) {
+fn void aot_emit_spine_swi(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
   Term term    = heap_read(loc);
   u64  swi_loc = term_val(term);
   u64  hit_loc = swi_loc + 0;
@@ -617,97 +571,84 @@ fn void aot_emit_spine_swi(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u3
 
   fprintf(f, "%sTerm %s = aot_pop_app_arg(stack, sp, sb);\n", pad, arg);
   fprintf(f, "%sif (!%s) {\n", pad, arg);
-  aot_emit_ret_fallback(f, loc, env, pad1);
+  aot_emit_ret_fallback(f, loc, sub, pad1);
   fprintf(f, "%s}\n", pad);
 
+  fprintf(f, "%s%s = aot_eval(%s, sp);\n", pad, arg, arg);
   fprintf(f, "%sif (term_tag(%s) != NUM) {\n", pad, arg);
-  fprintf(f, "%s%s = aot_eval(%s, sp);\n", pad1, arg, arg);
-  fprintf(f, "%s}\n", pad);
-  fprintf(f, "%sif (term_tag(%s) != NUM) {\n", pad, arg);
-  aot_emit_ret_fallback_app(f, loc, env, arg, pad1);
+  aot_emit_ret_fallback_app(f, loc, sub, arg, pad1);
   fprintf(f, "%s}\n", pad);
 
   fprintf(f, "%sif ((u32)term_val(%s) == %u) {\n", pad, arg, term_ext(term));
   aot_emit_itrs_inc(f, pad1);
-  aot_emit_spine(f, hit_loc, env, pad1, tmp);
+  aot_emit_spine(f, hit_loc, sub, pad1, tmp);
   fprintf(f, "%s} else {\n", pad);
   aot_emit_itrs_inc(f, pad1);
   fprintf(f, "%saot_push_app_arg(stack, sp, sb, %s);\n", pad1, arg);
-  aot_emit_spine(f, mis_loc, env, pad1, tmp);
+  aot_emit_spine(f, mis_loc, sub, pad1, tmp);
   fprintf(f, "%s}\n", pad);
 }
 
 // Emits one DUP spine node.
-fn void aot_emit_spine_dup(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *tmp) {
+fn void aot_emit_spine_dup(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
   Term term    = heap_read(loc);
   u64  dup_loc = term_val(term);
   u64  val_loc = dup_loc + 0;
   u64  bod_loc = dup_loc + 1;
-  Term val_tm  = heap_read(val_loc);
-  u8   val_tag = term_tag(val_tm);
 
-  if (env.dep >= AOT_ENV_CAP) {
-    aot_emit_ret_fallback(f, loc, env, pad);
+  if (sub.len >= AOT_SUB_CAP) {
+    aot_emit_ret_fallback(f, loc, sub, pad);
     return;
   }
 
-  // Conservative DUP fast-path:
-  // only compile when duplicating an already-bound variable projection.
-  // Complex DUP values fall back to ALO to preserve exact linear semantics.
-  switch (val_tag) {
-    case VAR:
-    case BJV:
-    case DP0:
-    case DP1:
-    case BJ0:
-    case BJ1: {
-      break;
-    }
-    default: {
-      aot_emit_ret_fallback(f, loc, env, pad);
-      return;
-    }
-  }
-
   char x_n[32];
-  char d_n[32];
-  char l_n[32];
-  snprintf(x_n, sizeof(x_n), "x%u", env.dep);
-  snprintf(d_n, sizeof(d_n), "d%u", env.dep);
-  snprintf(l_n, sizeof(l_n), "l%u", env.dep);
+  snprintf(x_n, sizeof(x_n), "x%u", sub.len);
+  aot_emit_expr(f, val_loc, sub, x_n, pad, tmp);
+  aot_emit_subst_entry(f, sub.len, x_n, pad);
 
-  // DUP fast-path: build the duplicated value directly.
-  aot_emit_expr(f, val_loc, env, x_n, pad, tmp);
-  fprintf(f, "%su64 %s = 0;\n", pad, l_n);
-  fprintf(f, "%sDups %s = (Dups){0};\n", pad, d_n);
+  AotSubst sub1 = sub;
+  sub1.kind[sub.len] = AOT_SUB_DUP;
+  sub1.lab[sub.len]  = term_ext(term);
+  sub1.len = sub.len + 1;
 
-  AotEmitEnv env1 = env;
-  env1.kind[env.dep] = AOT_BIND_DUP;
-  env1.lab[env.dep]  = term_ext(term);
-  env1.dep = env.dep + 1;
-
-  aot_emit_spine(f, bod_loc, env1, pad, tmp);
+  aot_emit_spine(f, bod_loc, sub1, pad, tmp);
 }
 
 // Emits one REF spine node.
-fn void aot_emit_spine_ref(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *tmp) {
+fn void aot_emit_spine_ref(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
   Term term = heap_read(loc);
+  u32 ref_id = term_ext(term);
   char pad1[128];
   aot_emit_pad_next(pad1, sizeof(pad1), pad);
 
   fprintf(f, "%sif (STEPS_ITRS_LIM == 0) {\n", pad);
-  fprintf(f, "%sreturn aot_call_ref(", pad1);
-  aot_emit_ref_id(f, term_ext(term));
-  fprintf(f, ", stack, sp, sb);\n");
+  if (ref_id == sub.self_id) {
+    char *self_name = table_get(sub.self_id);
+    if (self_name == NULL) {
+      fprintf(f, "%sreturn aot_call_ref(", pad1);
+      aot_emit_ref_id(f, ref_id);
+      fprintf(f, ", stack, sp, sb);\n");
+    } else {
+      char self_fun[256];
+      aot_emit_fun_name(self_fun, sizeof(self_fun), self_name);
+      fprintf(f, "%sreturn aot_call_direct(%s, ", pad1, self_fun);
+      aot_emit_ref_id(f, ref_id);
+      fprintf(f, ", stack, sp, sb);\n");
+    }
+  } else {
+    fprintf(f, "%sreturn aot_call_ref(", pad1);
+    aot_emit_ref_id(f, ref_id);
+    fprintf(f, ", stack, sp, sb);\n");
+  }
   fprintf(f, "%s}\n", pad);
 
-  aot_emit_ret_expr(f, loc, env, pad, tmp);
+  aot_emit_ret_expr(f, loc, sub, pad, tmp);
 }
 
 // Emits one spine node.
-fn void aot_emit_spine(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *tmp) {
+fn void aot_emit_spine(FILE *f, u64 loc, AotSubst sub, const char *pad, u32 *tmp) {
   if (*tmp >= AOT_EMIT_TMP_LIM) {
-    aot_emit_ret_fallback(f, loc, env, pad);
+    aot_emit_ret_fallback(f, loc, sub, pad);
     return;
   }
 
@@ -718,41 +659,45 @@ fn void aot_emit_spine(FILE *f, u64 loc, AotEmitEnv env, const char *pad, u32 *t
 
   switch (tag) {
     case APP: {
-      aot_emit_spine_app(f, loc, env, pad, tmp);
+      aot_emit_spine_app(f, loc, sub, pad, tmp);
       return;
     }
     case LAM: {
-      aot_emit_spine_lam(f, loc, env, pad, tmp);
+      aot_emit_spine_lam(f, loc, sub, pad, tmp);
       return;
     }
     case MAT: {
-      aot_emit_spine_mat(f, loc, env, pad, tmp);
+      aot_emit_spine_mat(f, loc, sub, pad, tmp);
       return;
     }
     case SWI: {
-      aot_emit_spine_swi(f, loc, env, pad, tmp);
+      aot_emit_spine_swi(f, loc, sub, pad, tmp);
+      return;
+    }
+    case USE: {
+      aot_emit_spine_use(f, loc, sub, pad, tmp);
       return;
     }
     case DUP: {
-      aot_emit_spine_dup(f, loc, env, pad, tmp);
+      aot_emit_spine_dup(f, loc, sub, pad, tmp);
       return;
     }
     case REF: {
-      aot_emit_spine_ref(f, loc, env, pad, tmp);
+      aot_emit_spine_ref(f, loc, sub, pad, tmp);
       return;
     }
     default: {
-      aot_emit_ret_expr(f, loc, env, pad, tmp);
+      aot_emit_ret_expr(f, loc, sub, pad, tmp);
       return;
     }
   }
 }
 
 // Emits one expression node into local `Term out`.
-fn void aot_emit_expr(FILE *f, u64 loc, AotEmitEnv env, const char *out, const char *pad, u32 *tmp) {
+fn void aot_emit_expr(FILE *f, u64 loc, AotSubst sub, const char *out, const char *pad, u32 *tmp) {
   if (*tmp >= AOT_EMIT_TMP_LIM) {
     fprintf(f, "%sTerm %s = ", pad, out);
-    aot_emit_fallback_expr(f, loc, env);
+    aot_emit_fallback_expr(f, loc, sub);
     fprintf(f, ";\n");
     return;
   }
@@ -800,7 +745,7 @@ fn void aot_emit_expr(FILE *f, u64 loc, AotEmitEnv env, const char *out, const c
       for (u32 i = 0; i < ari; i++) {
         char arg[32];
         aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
-        aot_emit_expr(f, ctr + i, env, arg, pad, tmp);
+        aot_emit_expr(f, ctr + i, sub, arg, pad, tmp);
         fprintf(f, "%s%s[%u] = %s;\n", pad, arr, i, arg);
       }
 
@@ -817,8 +762,8 @@ fn void aot_emit_expr(FILE *f, u64 loc, AotEmitEnv env, const char *out, const c
       aot_emit_tmp(fun, sizeof(fun), "fun", tmp);
       aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
 
-      aot_emit_expr(f, app + 0, env, fun, pad, tmp);
-      aot_emit_expr(f, app + 1, env, arg, pad, tmp);
+      aot_emit_expr(f, app + 0, sub, fun, pad, tmp);
+      aot_emit_expr(f, app + 1, sub, arg, pad, tmp);
 
       fprintf(f, "%sTerm %s = term_new_app(%s, %s);\n", pad, out, fun, arg);
       return;
@@ -831,8 +776,8 @@ fn void aot_emit_expr(FILE *f, u64 loc, AotEmitEnv env, const char *out, const c
       aot_emit_tmp(x, sizeof(x), "x", tmp);
       aot_emit_tmp(y, sizeof(y), "y", tmp);
 
-      aot_emit_expr(f, op2 + 0, env, x, pad, tmp);
-      aot_emit_expr(f, op2 + 1, env, y, pad, tmp);
+      aot_emit_expr(f, op2 + 0, sub, x, pad, tmp);
+      aot_emit_expr(f, op2 + 1, sub, y, pad, tmp);
 
       fprintf(f, "%sTerm %s = term_new_op2(%u, %s, %s);\n", pad, out, term_ext(term), x, y);
       return;
@@ -845,18 +790,28 @@ fn void aot_emit_expr(FILE *f, u64 loc, AotEmitEnv env, const char *out, const c
       aot_emit_tmp(a, sizeof(a), "a", tmp);
       aot_emit_tmp(b, sizeof(b), "b", tmp);
 
-      aot_emit_expr(f, sup + 0, env, a, pad, tmp);
-      aot_emit_expr(f, sup + 1, env, b, pad, tmp);
+      aot_emit_expr(f, sup + 0, sub, a, pad, tmp);
+      aot_emit_expr(f, sup + 1, sub, b, pad, tmp);
 
       fprintf(f, "%sTerm %s = term_new_sup(%u, %s, %s);\n", pad, out, term_ext(term), a, b);
+      return;
+    }
+    case USE: {
+      u64 use = term_val(term);
+
+      char fun[32];
+      aot_emit_tmp(fun, sizeof(fun), "fun", tmp);
+      aot_emit_expr(f, use + 0, sub, fun, pad, tmp);
+
+      fprintf(f, "%sTerm %s = term_new_use(%s);\n", pad, out, fun);
       return;
     }
     case VAR:
     case BJV: {
       u32 lvl = (u32)term_val(term);
-      if (lvl == 0 || lvl > env.dep) {
+      if (lvl == 0 || lvl > sub.len) {
         fprintf(f, "%sTerm %s = ", pad, out);
-        aot_emit_fallback_expr(f, loc, env);
+        aot_emit_fallback_expr(f, loc, sub);
         fprintf(f, ";\n");
         return;
       }
@@ -867,58 +822,46 @@ fn void aot_emit_expr(FILE *f, u64 loc, AotEmitEnv env, const char *out, const c
     case DP0:
     case BJ0: {
       u32 lvl = (u32)term_val(term);
-      if (lvl == 0 || lvl > env.dep) {
+      if (lvl == 0 || lvl > sub.len) {
         fprintf(f, "%sTerm %s = ", pad, out);
-        aot_emit_fallback_expr(f, loc, env);
+        aot_emit_fallback_expr(f, loc, sub);
         fprintf(f, ";\n");
         return;
       }
 
       u32 idx = lvl - 1;
-      if (env.kind[idx] != AOT_BIND_DUP) {
+      if (sub.kind[idx] != AOT_SUB_DUP) {
         fprintf(f, "%sTerm %s = ", pad, out);
-        aot_emit_fallback_expr(f, loc, env);
+        aot_emit_fallback_expr(f, loc, sub);
         fprintf(f, ";\n");
         return;
       }
-
-      char pad1[128];
-      aot_emit_pad_next(pad1, sizeof(pad1), pad);
-      fprintf(f, "%sif (l%u == 0) {\n", pad, idx);
-      fprintf(f, "%sd%u = aot_dup_loc(%u, x%u, &l%u);\n", pad1, idx, env.lab[idx], idx, idx);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%sTerm %s = d%u.dp0;\n", pad, out, idx);
+      fprintf(f, "%sTerm %s = term_new_dp0(%u, ls%u);\n", pad, out, sub.lab[idx], idx);
       return;
     }
     case DP1:
     case BJ1: {
       u32 lvl = (u32)term_val(term);
-      if (lvl == 0 || lvl > env.dep) {
+      if (lvl == 0 || lvl > sub.len) {
         fprintf(f, "%sTerm %s = ", pad, out);
-        aot_emit_fallback_expr(f, loc, env);
+        aot_emit_fallback_expr(f, loc, sub);
         fprintf(f, ";\n");
         return;
       }
 
       u32 idx = lvl - 1;
-      if (env.kind[idx] != AOT_BIND_DUP) {
+      if (sub.kind[idx] != AOT_SUB_DUP) {
         fprintf(f, "%sTerm %s = ", pad, out);
-        aot_emit_fallback_expr(f, loc, env);
+        aot_emit_fallback_expr(f, loc, sub);
         fprintf(f, ";\n");
         return;
       }
-
-      char pad1[128];
-      aot_emit_pad_next(pad1, sizeof(pad1), pad);
-      fprintf(f, "%sif (l%u == 0) {\n", pad, idx);
-      fprintf(f, "%sd%u = aot_dup_loc(%u, x%u, &l%u);\n", pad1, idx, env.lab[idx], idx, idx);
-      fprintf(f, "%s}\n", pad);
-      fprintf(f, "%sTerm %s = d%u.dp1;\n", pad, out, idx);
+      fprintf(f, "%sTerm %s = term_new_dp1(%u, ls%u);\n", pad, out, sub.lab[idx], idx);
       return;
     }
     default: {
       fprintf(f, "%sTerm %s = ", pad, out);
-      aot_emit_fallback_expr(f, loc, env);
+      aot_emit_fallback_expr(f, loc, sub);
       fprintf(f, ";\n");
       return;
     }
@@ -930,7 +873,7 @@ fn void aot_emit_expr(FILE *f, u64 loc, AotEmitEnv env, const char *out, const c
 
 // Emits one compiled definition.
 fn void aot_emit_def(FILE *f, u32 id) {
-  if (BOOK[id] == 0 || !AOT_EMIT_OK[id]) {
+  if (BOOK[id] == 0) {
     return;
   }
 
@@ -946,9 +889,10 @@ fn void aot_emit_def(FILE *f, u32 id) {
   fprintf(f, "// Compiled function for @%s (id %u).\n", name, id);
   fprintf(f, "static Term %s(Term *stack, u32 *sp, u32 sb) {\n", fun_name);
 
-  AotEmitEnv env = {0};
+  AotSubst sub = {0};
+  sub.self_id = id;
   u32 tmp = 0;
-  aot_emit_spine(f, root, env, "  ", &tmp);
+  aot_emit_spine(f, root, sub, "  ", &tmp);
 
   fprintf(f, "}\n\n");
 }
@@ -961,7 +905,7 @@ fn void aot_emit_register(FILE *f) {
   fprintf(f, "// Registers generated functions into the runtime table.\n");
   fprintf(f, "static void aot_register_generated(void) {\n");
   for (u32 id = 0; id < TABLE.len; id++) {
-    if (BOOK[id] == 0 || !AOT_EMIT_OK[id]) {
+    if (BOOK[id] == 0) {
       continue;
     }
 
@@ -1045,7 +989,6 @@ fn void aot_emit_entry_main(FILE *f, const AotBuildCfg *cfg) {
 // Emits the full standalone AOT C program.
 fn void aot_emit_to_file(FILE *f, const char *runtime_path, const char *src_path, const char *src_text, const AotBuildCfg *cfg) {
   AOT_EMIT_ITRS = aot_emit_counting(cfg);
-  aot_emit_compute_ok();
 
   fprintf(f, "// Auto-generated by HVM AOT.\n");
   fprintf(f, "// This file is standalone: compile with `clang -O2 -o <out> <file.c>`.\n");
@@ -1054,7 +997,7 @@ fn void aot_emit_to_file(FILE *f, const char *runtime_path, const char *src_path
   fprintf(f, "// - Includes full runtime TU directly (%s).\n", runtime_path);
   fprintf(f, "// - Emits one case-tree function per definition.\n");
   fprintf(f, "// - Separates spine interactions from tail expression building.\n");
-  fprintf(f, "// - Deopts by rebuilding ALO with LAM/DUP-aware lexical bindings.\n\n");
+  fprintf(f, "// - Deopts by rebuilding ALO with LAM/DUP-aware substitution entries.\n\n");
 
   fprintf(f, "#include ");
   aot_emit_c_string_token(f, runtime_path);

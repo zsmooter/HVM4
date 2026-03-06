@@ -37,7 +37,7 @@ fn Term wnf(Term term);
 static HvmAotFn AOT_FNS[BOOK_CAP] = {0};
 
 // AOT runtime limits.
-#define AOT_ENV_CAP   16
+#define AOT_SUB_CAP   16
 #define AOT_MAX_DEPTH 4096
 
 // Thread-local compiled-call depth for recursion cutoff.
@@ -60,67 +60,12 @@ fn void aot_itrs_add(u64 amount) {
 // Fallback
 // --------
 
-// Builds one lexical SUB-bit mask with all `len` entries enabled.
-fn u16 aot_fallback_sub_all(u16 len) {
-  u16 mask = 0;
-  for (u16 i = 0; i < len; i++) {
-    mask |= (u16)(1u << i);
-  }
-  return mask;
-}
-
-// Rebuilds one ALO node from captured lexical bindings.
-//
-// `sub_mask` controls which bind entries are stored with the SUB bit:
-// - bit i = 1: store `args[i] | SUB`   (LAM bindings)
-// - bit i = 0: store `args[i]` as-is   (DUP bindings; preserves SUB state)
-fn Term aot_fallback_alo_ctx(u64 tm_loc, u16 len, const Term *args, u16 sub_mask) {
+// Rebuilds one ALO node from an existing substitution-list head.
+fn Term aot_fallback_alo_ls(u64 tm_loc, u16 len, u64 ls_loc) {
   if (len == 0) {
     return term_new(0, ALO, 0, tm_loc);
   }
-
-  u64 ls_loc = 0;
-  for (u16 i = 0; i < len; i++) {
-    u64 bind = heap_alloc(2);
-    u8  sub  = (u8)((sub_mask >> i) & 1);
-    Term val = args[i];
-    if (sub) {
-      val = term_sub_set(val, 1);
-    }
-    heap_set(bind + 0, val);
-    heap_set(bind + 1, term_new(0, NUM, 0, ls_loc));
-    ls_loc = bind;
-  }
-
-  u64 alo_loc = heap_alloc(1);
-  u64 alo_val = ((ls_loc & ALO_LS_MASK) << ALO_TM_BITS) | (tm_loc & ALO_TM_MASK);
-  heap_set(alo_loc, alo_val);
-  return term_new(0, ALO, len, alo_loc);
-}
-
-// Rebuilds one ALO node assuming all bindings are lambda substitutions.
-fn Term aot_fallback_alo(u64 tm_loc, u16 len, const Term *args) {
-  return aot_fallback_alo_ctx(tm_loc, len, args, aot_fallback_sub_all(len));
-}
-
-// Reapplies arguments [from, argc) to a head term.
-fn Term aot_reapply(Term head, u16 argc, const Term *args, u16 from) {
-  for (u16 i = from; i < argc; i++) {
-    head = term_new_app(head, args[i]);
-  }
-  return head;
-}
-
-// Returns one copy-free DUP value predicate used by generated code.
-fn int aot_is_copy_free(Term term) {
-  u8 tag = term_tag(term);
-  if (tag == NUM) {
-    return 1;
-  }
-  if (tag == C00) {
-    return 1;
-  }
-  return 0;
+  return term_new_alo(ls_loc, len, tm_loc);
 }
 
 // Reduces one term to WNF using the caller's current stack position.
@@ -182,33 +127,25 @@ fn void aot_push_fields(Term *stack, u32 *s_pos, u32 base, Term ctr) {
   }
 }
 
-// Creates one DUP projection pair for generated code.
-fn Dups aot_dup(u32 lab, Term val) {
-  u64 loc = heap_alloc(1);
-  heap_set(loc, val);
-  Term dp0 = term_new_dp0(lab, loc);
-  Term dp1 = term_new_dp1(lab, loc);
-  return (Dups){ .dp0 = dp0, .dp1 = dp1 };
-}
-
-// Creates one DUP pair and returns its shared cell location.
-fn Dups aot_dup_loc(u32 lab, Term val, u64 *loc_out) {
-  u64 loc = heap_alloc(1);
-  heap_set(loc, val);
-  if (loc_out != NULL) {
-    *loc_out = loc;
-  }
-  Term dp0 = term_new_dp0(lab, loc);
-  Term dp1 = term_new_dp1(lab, loc);
-  return (Dups){ .dp0 = dp0, .dp1 = dp1 };
-}
-
 // Calls
 // -----
 
 // Returns current compiled recursion depth.
 fn u32 aot_call_depth(void) {
   return AOT_CALL_DEPTH;
+}
+
+// Calls one known compiled function pointer with depth guard.
+fn Term aot_call_direct(HvmAotFn fun, u32 ref_id, Term *stack, u32 *s_pos, u32 base) {
+  if (AOT_CALL_DEPTH >= AOT_MAX_DEPTH) {
+    return term_new_ref(ref_id);
+  }
+
+  AOT_CALL_DEPTH++;
+  Term out = fun(stack, s_pos, base);
+  AOT_CALL_DEPTH--;
+
+  return out;
 }
 
 // Calls one compiled ref using current stack slice, else returns residual REF application.
