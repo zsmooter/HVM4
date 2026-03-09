@@ -1,28 +1,20 @@
-@wnf = λ{
-  #Var: λi. #Var{i}
-  #Lam: λf. #Lam{f}
-  #App: λf. λx. @app(@wnf(f), x)
-}
+// lambda_eval.hvm
+// ---------------
+// Native HVM lambda benchmark.
 
-@app = λ{
-  #Lam: λf. λx. @wnf(f(@wnf(x)))
-  λf. λx. #App{f, x}
-}
+// Terms
+// -----
 
-@snf = λx. λd.
-  @sgo(@wnf(x), d)
+@c2  = λ&f. λx. f(f(x))
+@c8  = λ&f. λx. f(f(f(f(f(f(f(f(x))))))))
+@t   = λt. λf. t
+@f   = λt. λf. f
+@not = λb. b(@f, @t)
+@xor = λa. λ&b. a(@not(b), b)
+@tog = λb. @xor(b, @t)
 
-@sgo = λ{
-  #Var: λi. λd.
-    #Var{i}
-  #Lam: λf. λ&d.
-    #Lam{λx. @snf(f(#Var{d}), d + 1)}
-  #App: λf. λx. λ&d.
-    #App{@snf(f,d), @snf(x,d)}
-}
+// Main
+// ----
 
-@C2 = #Lam{λs. #Lam{λz. ! S &C2 = s; #App{S₀, #App{S₁, z}}}}
-@K2 = #Lam{λs. #Lam{λz. ! S &K2 = s; #App{S₀, #App{S₁, z}}}}
-
-@main = @snf(#App{@C2, @K2}, 0)
-//#Lam{λa.#Lam{λb.#App{#Var{0},#App{#Var{0},#App{#Var{0},#App{#Var{0},#Var{1}}}}}}}
+@main = @c8(@c2, @tog, @t)
+//λa.λb.a

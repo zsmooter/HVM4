@@ -1,0 +1,135 @@
+// lambda_subs.hvm
+// ---------------
+// Minimal standalone explicit-substitution lambda-calculus interpreter.
+//
+// Terms:
+// - #Var{idx}
+// - #Lam{body}
+// - #App{fun, arg}
+
+// Subst
+// -----
+
+@lift = λcut. λtrm.
+  @lift_0(cut, trm)
+
+@lift_0 = λ&cut. λ{
+  #Var: λ&idx.
+    ! c &D = cut
+    ! i &D = idx
+    @lift_var(i₀ < c₀, i₁, c₁)
+  #Lam: λbod.
+    #Lam{@lift_0(cut + 1, bod)}
+  #App: λfun. λarg.
+    ! c &D = cut
+    #App{@lift_0(c₀, fun), @lift_0(c₁, arg)}
+}
+
+@lift_var = λ{
+  1: λidx. λcut.
+    #Var{idx}
+  0: λidx. λcut.
+    #Var{idx + 1}
+}
+
+@subst = λval. λbod.
+  @subst_0(0, val, bod)
+
+@subst_0 = λ&dep. λ&val. λ{
+  #Var: λ&idx.
+    ! d &D = dep
+    ! i &D = idx
+    ! x &D = i₀
+    @subst_var(x₀ < d₀, x₁ > d₁, i₁, val)
+  #Lam: λbod.
+    #Lam{@subst_0(dep + 1, @lift(0, val), bod)}
+  #App: λfun. λarg.
+    ! d &D = dep
+    ! v &D = val
+    #App{@subst_0(d₀, v₀, fun), @subst_0(d₁, v₁, arg)}
+}
+
+@subst_var = λ{
+  1: λgt. λidx. λval.
+    #Var{idx}
+  0: λgt. λidx. λval.
+    @subst_var_0(gt, idx, val)
+}
+
+@subst_var_0 = λ{
+  1: λidx. λval.
+    #Var{idx - 1}
+  0: λidx. λval.
+    val
+}
+
+// Eval
+// ----
+
+@eval = λtrm.
+  trm
+
+// Quote
+// -----
+
+@quote_wnf = λtrm. λlvl.
+  trm
+
+@quote = λtrm. λlvl.
+  trm
+
+// WNF
+// ---
+
+@wnf = λtrm.
+  @wnf_0(@eval(trm))
+
+@wnf_0 = λ{
+  #App: λfun. λarg.
+    @wnf_app(@wnf(fun), arg)
+  λtrm.
+    @eval(trm)
+}
+
+@wnf_app = λ{
+  #Lam: λbod. λarg.
+    @wnf(@subst(@wnf(arg), bod))
+  λ&fun. λarg.
+    #App{fun, arg}
+}
+
+// SNF
+// ---
+
+@snf = λtrm.
+  @snf_0(@quote(@wnf(trm), 0), 0)
+
+@snf_0 = λ{
+  #Var: λidx. λlvl.
+    #Var{idx}
+  #Lam: λbod. λ&lvl.
+    ! l &D = lvl
+    #Lam{@snf_0(@quote(@wnf(bod), l₀ + 1), l₁ + 1)}
+  #App: λfun. λarg. λ&lvl.
+    ! l &D = lvl
+    ! x &D = l₀
+    ! y &D = l₁
+    #App{@snf_0(@quote(@wnf(fun), x₀), x₁), @snf_0(@quote(@wnf(arg), y₀), y₁)}
+}
+
+// Terms
+// -----
+
+@c2  = #Lam{#Lam{#App{#Var{1}, #App{#Var{1}, #Var{0}}}}}
+@c8  = #Lam{#Lam{#App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #Var{0}}}}}}}}}}}
+@t   = #Lam{#Lam{#Var{1}}}
+@f   = #Lam{#Lam{#Var{0}}}
+@not = #Lam{#App{#App{#Var{0}, @f}, @t}}
+@xor = #Lam{#Lam{#App{#App{#Var{1}, #App{@not, #Var{0}}}, #Var{0}}}}
+@tog = #Lam{#App{#App{@xor, #Var{0}}, @t}}
+
+// Main
+// ----
+
+@main = @snf(#App{#App{#App{@c8, @c2}, @tog}, @t})
+//#Lam{#Lam{#Var{1}}}

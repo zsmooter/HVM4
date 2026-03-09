@@ -1,0 +1,187 @@
+// lambda_env1.hvm
+// ----------------
+// Tuple-threaded standalone environment-based lambda-calculus interpreter.
+//
+// Terms:
+// - #Var{idx}
+// - #Lam{body}
+// - #App{fun, arg}
+//
+// Values:
+// - #VLam{env, body}
+// - #VNeu{neu}
+//
+// Neutrals:
+// - #NVar{lev}
+// - #NApp{fun, arg}
+//
+// Why this is faster than lambda_env0.hvm:
+//
+// On HVM, duplications (ex: variables that use &) are very costly, in special
+// when the cloned structure is large. To avoid that, a trick we often use is
+// to pass that variable linearly, using a tuple (&T{x,y}) and tuple projections
+// (! x_ret &T = ...), and avoiding cross-branch dups by moving the
+// pattern-matched value to the beginning of the argument list.
+//
+// Bad:
+//
+//   @foo = λ&big. λ{
+//     #Foo: λx. λy. @foo(x,big) + @foo(y,big)
+//     #Bar: λx. λy. @foo(x,big) + @foo(y,big)
+//     ...
+//   }
+//
+// Here, big is duplicated for two reasons:
+// - to pass it to both branches
+// - to pass it to both recursive calls
+//
+// Better:
+//
+//   @foo = λ{
+//     #Foo: λx. λy. λbig.
+//       ! x_ret &T = @foo(x,big);
+//       ! y_ret &T = @foo(y,x_ret₀);
+//       &T{y_ret₀, x_ret₁ + y_ret₁}
+//     #Bar: λx. λy. λbig. ...
+//   }
+//
+// Here, we avoid all dups of big:
+// - by moving it to the last argument, so it gets its own λ on each branch
+// - by using tuples to pass leftover big's from recursive calls in a chain-like fashion
+
+// Subst
+// -----
+
+@env_nil = λidx.
+  #VNeu{#NVar{idx + 1000}}
+
+@env_get = λidx. λ&env.
+  ! e &D = env
+  &T{e₀, e₁(idx)}
+
+@env_ext = λenv. λarg. λ{
+  0: arg
+  λn.
+    env(n - 1)
+}
+
+@subst = λenv. λbod. λarg.
+  ! ret &T = @eval_0(bod, @env_ext(env, arg))
+  ret₁
+
+// Eval
+// ----
+
+@eval = λtrm.
+  ! ret &T = @eval_0(trm, @env_nil)
+  ret₁
+
+@eval_0 = λ{
+  #Var: λidx. λenv.
+    @env_get(idx, env)
+  #Lam: λbod. λ&env.
+    ! e &D = env
+    &T{e₀, #VLam{e₁, bod}}
+  #App: λfun. λarg. λenv.
+    ! fun_ret &T = @eval_0(fun, env)
+    ! arg_ret &T = @eval_0(arg, fun_ret₀)
+    @wnf_app(fun_ret₁, arg_ret₁, arg_ret₀)
+}
+
+// Quote
+// -----
+
+@quote_wnf = λ{
+  #VLam: λenv. λbod. λ&lvl.
+    ! l &D = lvl
+    ! ret &T = @quote_wnf_body(bod, env, 1, l₀ + 1)
+    ret₁
+  #VNeu: λneu. λlvl.
+    @quote_wnf_neu(neu, lvl)
+}
+
+@quote_wnf_body = λ{
+  #Var: λ&idx. λenv. λ&cut. λlvl.
+    ! i &D = idx
+    ! c &D = cut
+    @quote_wnf_var(i₀ < c₀, i₁, env, c₁, lvl)
+  #Lam: λbod. λenv. λcut. λ&lvl.
+    ! l &D = lvl
+    ! ret &T = @quote_wnf_body(bod, env, cut + 1, l₀ + 1)
+    &T{ret₀, #Lam{ret₁}}
+  #App: λfun. λarg. λenv. λcut. λ&lvl.
+    ! c &D = cut
+    ! l &D = lvl
+    ! fun_ret &T = @quote_wnf_body(fun, env, c₀, l₀)
+    ! arg_ret &T = @quote_wnf_body(arg, fun_ret₀, c₁, l₁)
+    &T{arg_ret₀, #App{fun_ret₁, arg_ret₁}}
+}
+
+@quote_wnf_var = λ{
+  1: λidx. λenv. λcut. λlvl.
+    &T{env, #Var{idx}}
+  0: λidx. λenv. λcut. λlvl.
+    ! ret &T = @env_get(idx - cut, env)
+    &T{ret₀, @quote_wnf(ret₁, lvl)}
+}
+
+@quote_wnf_neu = λ{
+  #NVar: λlev. λlvl.
+    #Var{lvl - lev - 1}
+  #NApp: λfun. λarg. λ&lvl.
+    ! l &D = lvl
+    #App{@quote_wnf_neu(fun, l₀), @quote_wnf(arg, l₁)}
+}
+
+@quote = λ{
+  #VLam: λenv. λbod. λ&lvl.
+    ! l &D = lvl
+    ! x = #VNeu{#NVar{l₀}}
+    #Lam{@quote(@subst(env, bod, x), l₁ + 1)}
+  #VNeu: λneu. λlvl.
+    @quote_neu(neu, lvl)
+}
+
+@quote_neu = λ{
+  #NVar: λlev. λlvl.
+    #Var{lvl - lev - 1}
+  #NApp: λfun. λarg. λ&lvl.
+    ! l &D = lvl
+    #App{@quote_neu(fun, l₀), @quote(arg, l₁)}
+}
+
+// WNF
+// ---
+
+@wnf = λtrm.
+  @quote_wnf(@eval(trm), 0)
+
+@wnf_app = λ{
+  #VLam: λenv. λbod. λarg. λout.
+    &T{out, @subst(env, bod, arg)}
+  #VNeu: λneu. λarg. λout.
+    &T{out, #VNeu{#NApp{neu, arg}}}
+}
+
+// SNF
+// ---
+
+@snf = λtrm.
+  @quote(@eval(trm), 0)
+
+// Terms
+// -----
+
+@c2  = #Lam{#Lam{#App{#Var{1}, #App{#Var{1}, #Var{0}}}}}
+@c8  = #Lam{#Lam{#App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #Var{0}}}}}}}}}}}
+@t   = #Lam{#Lam{#Var{1}}}
+@f   = #Lam{#Lam{#Var{0}}}
+@not = #Lam{#App{#App{#Var{0}, @f}, @t}}
+@xor = #Lam{#Lam{#App{#App{#Var{1}, #App{@not, #Var{0}}}, #Var{0}}}}
+@tog = #Lam{#App{#App{@xor, #Var{0}}, @t}}
+
+// Main
+// ----
+
+@main = @snf(#App{#App{#App{@c8, @c2}, @tog}, @t})
+//#Lam{#Lam{#Var{1}}}

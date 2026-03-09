@@ -1,0 +1,145 @@
+// lambda_env0.hvm
+// ----------------
+// Baseline standalone environment-based lambda-calculus interpreter.
+//
+// Terms:
+// - #Var{idx}
+// - #Lam{body}
+// - #App{fun, arg}
+//
+// Values:
+// - #VLam{env, body}
+// - #VNeu{neu}
+//
+// Neutrals:
+// - #NVar{lev}
+// - #NApp{fun, arg}
+
+// Subst
+// -----
+
+@env_get = λ{
+  []: λidx.
+    #VNeu{#NVar{idx + 1000}};
+  <>: λh. λt. λidx.
+    @env_get_0(idx, h, t)
+}
+
+@env_get_0 = λ{
+  0: λh. λt.
+    h
+  λn. λh. λt.
+    @env_get(t, n - 1)
+}
+
+@subst = λenv. λbod. λarg.
+  @eval_0(arg <> env, bod)
+
+// Eval
+// ----
+
+@eval = λtrm.
+  @eval_0([], trm)
+
+@eval_0 = λ&env. λ{
+  #Var: λidx.
+    @env_get(env, idx)
+  #Lam: λbod.
+    #VLam{env, bod}
+  #App: λfun. λarg.
+    ! e &D = env
+    @wnf_app(@eval_0(e₀, fun), @eval_0(e₁, arg))
+}
+
+// Quote
+// -----
+
+@quote_wnf = λ{
+  #VLam: λenv. λbod. λ&lvl.
+    ! l &D = lvl
+    #Lam{@quote_wnf_body(env, 1, l₀ + 1, bod)}
+  #VNeu: λneu. λlvl.
+    @quote_wnf_neu(neu, lvl)
+}
+
+@quote_wnf_body = λ&env. λ&cut. λ&lvl. λ{
+  #Var: λidx.
+    ! i &D = idx
+    ! c &D = cut
+    @quote_wnf_var(i₀ < c₀, env, c₁, lvl, i₁)
+  #Lam: λbod.
+    #Lam{@quote_wnf_body(env, cut + 1, lvl + 1, bod)}
+  #App: λfun. λarg.
+    ! e &D = env
+    ! c &D = cut
+    ! l &D = lvl
+    #App{@quote_wnf_body(e₀, c₀, l₀, fun), @quote_wnf_body(e₁, c₁, l₁, arg)}
+}
+
+@quote_wnf_var = λ{
+  1: λ&env. λ&cut. λ&lvl. λidx.
+    #Var{idx}
+  0: λ&env. λ&cut. λ&lvl. λidx.
+    @quote_wnf(@env_get(env, idx - cut), lvl)
+}
+
+@quote_wnf_neu = λ{
+  #NVar: λlev. λlvl.
+    #Var{lvl - lev - 1}
+  #NApp: λfun. λarg. λ&lvl.
+    ! l &D = lvl
+    #App{@quote_wnf_neu(fun, l₀), @quote_wnf(arg, l₁)}
+}
+
+@quote = λ{
+  #VLam: λenv. λbod. λ&lvl.
+    ! l &D = lvl
+    ! x = #VNeu{#NVar{l₀}}
+    #Lam{@quote(@subst(env, bod, x), l₁ + 1)}
+  #VNeu: λneu. λlvl.
+    @quote_neu(neu, lvl)
+}
+
+@quote_neu = λ{
+  #NVar: λlev. λlvl.
+    #Var{lvl - lev - 1}
+  #NApp: λfun. λarg. λ&lvl.
+    ! l &D = lvl
+    #App{@quote_neu(fun, l₀), @quote(arg, l₁)}
+}
+
+// WNF
+// ---
+
+@wnf = λtrm.
+  @quote_wnf(@eval(trm), 0)
+
+@wnf_app = λ{
+  #VLam: λenv. λbod. λarg.
+    @subst(env, bod, arg)
+  #VNeu: λneu. λarg.
+    #VNeu{#NApp{neu, arg}}
+}
+
+// SNF
+// ---
+
+@snf = λtrm.
+  @quote(@eval(trm), 0)
+
+// Terms
+// -----
+
+@c2  = #Lam{#Lam{#App{#Var{1}, #App{#Var{1}, #Var{0}}}}}
+@c8  = #Lam{#Lam{#App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #App{#Var{1}, #Var{0}}}}}}}}}}}
+@t   = #Lam{#Lam{#Var{1}}}
+@f   = #Lam{#Lam{#Var{0}}}
+@not = #Lam{#App{#App{#Var{0}, @f}, @t}}
+@xor = #Lam{#Lam{#App{#App{#Var{1}, #App{@not, #Var{0}}}, #Var{0}}}}
+@tog = #Lam{#App{#App{@xor, #Var{0}}, @t}}
+
+// Main
+// ----
+
+@main = @snf(#App{#App{#App{@c8, @c2}, @tog}, @t})
+//#Lam{#Lam{#Var{1}}}

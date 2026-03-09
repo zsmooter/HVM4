@@ -1,0 +1,64 @@
+// lambda_hoas.hvm
+// ---------------
+// Minimal standalone HOAS lambda-calculus interpreter.
+//
+// Terms:
+// - #Lam{λ&x. body}
+// - #App{fun, arg}
+
+// Subst
+// -----
+
+@subst = λbod. λarg.
+  bod(arg)
+
+// WNF
+// ---
+
+@wnf = λ{
+  #App: λfun. λarg.
+    @wnf_app(@wnf(fun), arg)
+  λx.
+    x
+}
+
+@wnf_app = λ{
+  #Lam: λbod. λarg.
+    @wnf(@subst(bod, @wnf(arg)))
+  λ&fun. λarg.
+    #App{fun, arg}
+}
+
+// SNF
+// ---
+
+@snf = λtrm.
+  @snf_0(@wnf(trm))
+
+@snf_0 = λ{
+  #Lam: λbod.
+    #Lam{λ&x. @snf(bod(#Sub{x}))}
+  #App: λfun. λarg.
+    #App{@snf(fun), @snf(arg)}
+  #Sub: λx.
+    x
+  λx.
+    x
+}
+
+// Terms
+// -----
+
+@c2  = #Lam{λ&f. #Lam{λ&x. #App{f, #App{f, x}}}}
+@c8  = #Lam{λ&f. #Lam{λ&x. #App{f, #App{f, #App{f, #App{f, #App{f, #App{f, #App{f, #App{f, x}}}}}}}}}}
+@t   = #Lam{λ&t. #Lam{λ&f. t}}
+@f   = #Lam{λ&t. #Lam{λ&f. f}}
+@not = #Lam{λ&b. #App{#App{b, @f}, @t}}
+@xor = #Lam{λ&a. #Lam{λ&b. #App{#App{a, #App{@not, b}}, b}}}
+@tog = #Lam{λ&b. #App{#App{@xor, b}, @t}}
+
+// Main
+// ----
+
+@main = @snf(#App{#App{#App{@c8, @c2}, @tog}, @t})
+//#Lam{λa.#Lam{λb.a}}
