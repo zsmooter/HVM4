@@ -68,27 +68,30 @@ fn void aot_emit_upper_ident(char *out, u32 out_cap, const char *name) {
   out[j] = '\0';
 }
 
-// Builds one function name.
-fn void aot_emit_fun_name(char *out, u32 out_cap, const char *name) {
-  if (out_cap < 5) {
+// Builds one prefixed function name.
+fn void aot_emit_prefixed_fun_name(char *out, u32 out_cap, const char *prefix, const char *name) {
+  u32 pre_len = (u32)strlen(prefix);
+
+  if (out_cap <= pre_len + 1) {
     if (out_cap > 0) {
       out[0] = '\0';
     }
     return;
   }
 
-  u32 need = 4;
+  u32 need = pre_len + 2;
   for (u32 i = 0; name[i] != '\0'; i++) {
     need += 1;
   }
   if (need > out_cap) {
-    fprintf(stderr, "ERROR: AOT function name for '@%s' exceeds emitter limit (%u chars)\n", name, out_cap - 1);
+    fprintf(stderr, "ERROR: AOT function name for '@%s' with prefix '%s' exceeds emitter limit (%u chars)\n", name, prefix, out_cap - 1);
     exit(1);
   }
 
   u32 j = 0;
-  out[j++] = 'F';
-  out[j++] = 'N';
+  for (u32 i = 0; prefix[i] != '\0'; i++) {
+    out[j++] = prefix[i];
+  }
   out[j++] = '_';
 
   for (u32 i = 0; name[i] != '\0'; i++) {
@@ -98,7 +101,7 @@ fn void aot_emit_fun_name(char *out, u32 out_cap, const char *name) {
     u8 d9 = c >= '0' && c <= '9';
     char d = (az || AZ || d9) ? (char)c : '_';
 
-    if (j == 3 && d9) {
+    if (j == pre_len + 1 && d9) {
       if (j + 1 >= out_cap) {
         break;
       }
@@ -111,10 +114,15 @@ fn void aot_emit_fun_name(char *out, u32 out_cap, const char *name) {
     out[j++] = d;
   }
 
-  if (j == 3) {
+  if (j == pre_len + 1) {
     out[j++] = '_';
   }
   out[j] = '\0';
+}
+
+// Builds one function name.
+fn void aot_emit_fun_name(char *out, u32 out_cap, const char *name) {
+  aot_emit_prefixed_fun_name(out, out_cap, "FN", name);
 }
 
 // Builds one constant name.
@@ -748,6 +756,31 @@ fn int aot_emit_get_fun_name(char *out, u32 out_cap, u32 ref_id) {
   return 1;
 }
 
+// Returns one helper name for a REF id.
+fn int aot_emit_get_helper_name(char *out, u32 out_cap, const char *prefix, u32 ref_id) {
+  if (ref_id >= TABLE.len || BOOK[ref_id] == 0) {
+    return 0;
+  }
+
+  char *name = table_get(ref_id);
+  if (name == NULL) {
+    return 0;
+  }
+
+  aot_emit_prefixed_fun_name(out, out_cap, prefix, name);
+  return 1;
+}
+
+// Returns one direct unary helper name for a REF id.
+fn int aot_emit_get_mat1_name(char *out, u32 out_cap, u32 ref_id) {
+  return aot_emit_get_helper_name(out, out_cap, "FN1", ref_id);
+}
+
+// Returns one direct binary helper name for a REF id.
+fn int aot_emit_get_direct2_name(char *out, u32 out_cap, u32 ref_id) {
+  return aot_emit_get_helper_name(out, out_cap, "FN2", ref_id);
+}
+
 // Checks one direct unary helper.
 fn int aot_emit_has_direct_mat1(u32 ref_id) {
   AotLoopAdd loop_add;
@@ -773,10 +806,7 @@ fn int aot_emit_get_direct_name(char *out, u32 out_cap, u32 ref_id, u32 argc) {
   if (!aot_match_loop_add(BOOK[ref_id], ref_id, &loop)) {
     return 0;
   }
-  if (!aot_emit_get_fun_name(out, out_cap, ref_id)) {
-    return 0;
-  }
-  strncat(out, "_2", out_cap - strlen(out) - 1);
+  aot_emit_get_direct2_name(out, out_cap, ref_id);
   return 1;
 }
 
@@ -870,12 +900,14 @@ fn void aot_emit_expr_call(FILE *f, u64 loc, AotSubst sub, const char *out, cons
   fprintf(f, "%su32 %s = *sp;\n", pad1, base);
   if (argc == 1 && ref_id == sub.self_id && aot_emit_has_direct_mat1(ref_id)) {
     char dir_name[256];
+    char dir_fun_name[256];
     char arg[32];
     aot_emit_get_fun_name(dir_name, sizeof(dir_name), ref_id);
+    aot_emit_get_mat1_name(dir_fun_name, sizeof(dir_fun_name), ref_id);
     fprintf(f, "%s// Direct unary self call.\n", pad1);
     aot_emit_tmp(arg, sizeof(arg), "arg", tmp);
     aot_emit_expr(f, args[0], sub, arg, pad1, tmp);
-    fprintf(f, "%s%s = aot_call_expr1(%s_1, %s, ", pad1, out, dir_name, dir_name);
+    fprintf(f, "%s%s = aot_call_expr1(%s, %s, ", pad1, out, dir_fun_name, dir_name);
     aot_emit_ref_id(f, ref_id);
     fprintf(f, ", %s, stack, sp, %s);\n", arg, base);
     fprintf(f, "%s} else {\n", pad);
@@ -1467,7 +1499,9 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
   }
 
   char fun_name[256];
+  char helper_name[256];
   aot_emit_fun_name(fun_name, sizeof(fun_name), name);
+  aot_emit_get_direct2_name(helper_name, sizeof(helper_name), id);
   char zero_tok[320];
   char succ_tok[320];
   aot_emit_const_name(zero_tok, sizeof(zero_tok), "C", loop.zero_id);
@@ -1476,7 +1510,7 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
   if (loop.tail_acc) {
     fprintf(f,
       "// Direct helper for @%s with 2 args.\n"
-      "static Term %s_2(Term a_0, Term b_0) {\n"
+      "static Term %s(Term a_0, Term b_0) {\n"
       "add_loop_2:\n"
       "  a_0 = aot_force(a_0);\n"
       "  switch (term_tag(a_0)) {\n"
@@ -1511,7 +1545,7 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
       "  }\n"
       "}\n\n",
       name,
-      fun_name,
+      helper_name,
       zero_tok,
       succ_tok,
       succ_tok,
@@ -1550,7 +1584,7 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
       "            heap_set(ls0 + 1, term_new(0, NUM, 0, 0ULL));\n"
       "            return aot_fallback_alo_ls(%lluULL, 1, ls0);\n"
       "          }\n"
-      "          return %s_2(a_0, b_0);\n"
+      "          return %s(a_0, b_0);\n"
       "        }\n"
       "        default: {\n"
       "          aot_itrs_add(2);\n"
@@ -1571,14 +1605,14 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
       (unsigned long long)loop.zero_lam_loc,
       succ_tok,
       (unsigned long long)loop.succ_lam_loc,
-      fun_name,
+      helper_name,
       (unsigned long long)loop.root_loc);
     return;
   }
 
   fprintf(f,
     "// Direct helper for @%s with 2 args.\n"
-    "static Term %s_2(Term a_0, Term b_0) {\n"
+    "static Term %s(Term a_0, Term b_0) {\n"
     "  u32 n_0 = 0;\n"
     "  a_0 = aot_force(a_0);\n"
     "  switch (term_tag(a_0)) {\n"
@@ -1642,7 +1676,7 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
     "  }\n"
     "}\n\n",
     name,
-    fun_name,
+    helper_name,
     zero_tok,
     succ_tok,
     zero_tok,
@@ -1673,7 +1707,7 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
     "            aot_itrs_inc();\n"
     "            return aot_fallback_alo_ls(%lluULL, 0, 0ULL);\n"
     "          }\n"
-    "          return %s_2(a_0, b_0);\n"
+    "          return %s(a_0, b_0);\n"
     "        }\n"
     "        case %s: {\n"
     "          Term a_1 = heap_read(term_val(a_0) + 0);\n"
@@ -1685,7 +1719,7 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
     "            heap_set(ls0 + 1, term_new(0, NUM, 0, 0ULL));\n"
     "            return aot_fallback_alo_ls(%lluULL, 1, ls0);\n"
     "          }\n"
-    "          return %s_2(a_0, b_0);\n"
+    "          return %s(a_0, b_0);\n"
     "        }\n"
     "        default: {\n"
     "          aot_itrs_add(2);\n"
@@ -1704,10 +1738,10 @@ fn void aot_emit_def_loop_add(FILE *f, u32 id, AotLoopAdd loop) {
     (unsigned long long)loop.root_loc,
     zero_tok,
     (unsigned long long)loop.zero_lam_loc,
-    fun_name,
+    helper_name,
     succ_tok,
     (unsigned long long)loop.succ_lam_loc,
-    fun_name,
+    helper_name,
     (unsigned long long)loop.root_loc);
 }
 
@@ -1719,7 +1753,9 @@ fn void aot_emit_def_loop_u32(FILE *f, u32 id, AotLoopU32 loop) {
   }
 
   char fun_name[256];
+  char helper_name[256];
   aot_emit_fun_name(fun_name, sizeof(fun_name), name);
+  aot_emit_get_direct2_name(helper_name, sizeof(helper_name), id);
   char zero_tok[320];
   char succ_tok[320];
   aot_emit_const_name(zero_tok, sizeof(zero_tok), "C", loop.zero_id);
@@ -1728,7 +1764,7 @@ fn void aot_emit_def_loop_u32(FILE *f, u32 id, AotLoopU32 loop) {
   if (loop.tail_acc) {
     fprintf(f,
       "// Direct helper for @%s with 2 args.\n"
-      "static Term %s_2(Term a_0, Term b_0) {\n"
+      "static Term %s(Term a_0, Term b_0) {\n"
       "u32_loop_2:\n"
       "  a_0 = aot_force(a_0);\n"
       "  switch (term_tag(a_0)) {\n"
@@ -1784,7 +1820,7 @@ fn void aot_emit_def_loop_u32(FILE *f, u32 id, AotLoopU32 loop) {
       "  }\n"
       "}\n\n",
       name,
-      fun_name,
+      helper_name,
       zero_tok,
       succ_tok,
       (unsigned long long)loop.root_loc);
@@ -1822,7 +1858,7 @@ fn void aot_emit_def_loop_u32(FILE *f, u32 id, AotLoopU32 loop) {
       "            heap_set(ls0 + 1, term_new(0, NUM, 0, 0ULL));\n"
       "            return aot_fallback_alo_ls(%lluULL, 1, ls0);\n"
       "          }\n"
-      "          return %s_2(a_0, b_0);\n"
+      "          return %s(a_0, b_0);\n"
       "        }\n"
       "        default: {\n"
       "          aot_itrs_add(2);\n"
@@ -1843,7 +1879,7 @@ fn void aot_emit_def_loop_u32(FILE *f, u32 id, AotLoopU32 loop) {
       (unsigned long long)loop.zero_lam_loc,
       succ_tok,
       (unsigned long long)loop.succ_lam_loc,
-      fun_name,
+      helper_name,
       (unsigned long long)loop.root_loc);
     return;
   }
@@ -1906,11 +1942,11 @@ fn void aot_emit_def_direct_mat1(FILE *f, u32 id) {
     return;
   }
 
-  char fun_name[256];
-  aot_emit_fun_name(fun_name, sizeof(fun_name), name);
+  char helper_name[256];
+  aot_emit_get_mat1_name(helper_name, sizeof(helper_name), id);
 
   fprintf(f, "// Direct helper for @%s with 1 arg.\n", name);
-  fprintf(f, "static Term %s_1(Term x_0, Term *stack, u32 *sp, u32 sb) {\n", fun_name);
+  fprintf(f, "static Term %s(Term x_0, Term *stack, u32 *sp, u32 sb) {\n", helper_name);
 
   AotSubst sub = {0};
   sub.self_id = id;
@@ -1935,14 +1971,18 @@ fn void aot_emit_decl(FILE *f, u32 id) {
   aot_emit_fun_name(fun_name, sizeof(fun_name), name);
   AotLoopAdd loop_add;
   AotLoopU32 loop_u32;
+  char helper_name[256];
   if (aot_match_loop_add(BOOK[id], id, &loop_add)) {
-    fprintf(f, "static Term %s_2(Term a_0, Term b_0);\n", fun_name);
+    aot_emit_get_direct2_name(helper_name, sizeof(helper_name), id);
+    fprintf(f, "static Term %s(Term a_0, Term b_0);\n", helper_name);
   }
   if (aot_match_loop_u32(BOOK[id], id, &loop_u32) && loop_u32.tail_acc) {
-    fprintf(f, "static Term %s_2(Term a_0, Term b_0);\n", fun_name);
+    aot_emit_get_direct2_name(helper_name, sizeof(helper_name), id);
+    fprintf(f, "static Term %s(Term a_0, Term b_0);\n", helper_name);
   }
   if (aot_emit_has_direct_mat1(id)) {
-    fprintf(f, "static Term %s_1(Term x_0, Term *stack, u32 *sp, u32 sb);\n", fun_name);
+    aot_emit_get_mat1_name(helper_name, sizeof(helper_name), id);
+    fprintf(f, "static Term %s(Term x_0, Term *stack, u32 *sp, u32 sb);\n", helper_name);
   }
   fprintf(f, "static Term %s(Term *stack, u32 *sp, u32 sb);\n", fun_name);
 }
