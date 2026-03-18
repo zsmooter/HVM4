@@ -99,7 +99,6 @@ static void *eval_collapse_worker(void *arg) {
   u32 steal_period = EVAL_COLLAPSE_STEAL_PERIOD;
   u32 steal_batch = EVAL_COLLAPSE_STEAL_BATCH;
   u32 steal_cursor = me + 1;
-  u64 limit = C->limit;
   bool active = true;
   u64 local_printed = 0;
 

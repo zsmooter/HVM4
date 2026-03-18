@@ -58,7 +58,7 @@ fn Term parse_term_dup(PState *s, u32 depth) {
     Term val = parse_term(s, depth);
     parse_skip(s);
     parse_match(s, ";");
-    PBind* bind = parse_bind_push(nam, depth, 0, 0, cloned);
+    parse_bind_push(nam, depth, 0, 0, cloned);
     u64  loc  = heap_alloc(1);
     Term body = parse_term(s, depth + 1);
     parse_bind_pop();
@@ -94,7 +94,7 @@ fn Term parse_term_dup(PState *s, u32 depth) {
     parse_skip(s);
     parse_match(s, ";");
     parse_skip(s);
-    PBind* bind = parse_bind_push(nam, depth, PARSE_DYN_LAB, 0, cloned);
+    parse_bind_push(nam, depth, PARSE_DYN_LAB, 0, cloned);
     Term body = parse_term(s, depth + 2);
     parse_bind_pop();
     u32 uses0 = count_uses(body, depth + 1, BJV, 0);
@@ -133,7 +133,7 @@ fn Term parse_term_dup(PState *s, u32 depth) {
   parse_skip(s);
   parse_match(s, ";");
   parse_skip(s);
-  PBind* bind = parse_bind_push(nam, depth, lab, 0, cloned);
+  parse_bind_push(nam, depth, lab, 0, cloned);
   Term body   = parse_term(s, depth + 1);
   parse_bind_pop();
   u32 uses0 = count_uses(body, depth + 1, BJ0, lab);
