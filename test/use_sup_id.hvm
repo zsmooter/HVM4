@@ -1,0 +1,4 @@
+// Test: USE over a superposition must preserve both cloned branches.
+@main = λ{λx.x}(&a{1,2})
+//1
+//2

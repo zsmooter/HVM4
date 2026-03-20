@@ -1,0 +1,4 @@
+// Test: structural equality should preserve both cloned branches when a
+// duplicated lambda compares a constructor on the left.
+@main = !f& = λa. #A{} === a; f₀(#A{})
+//1

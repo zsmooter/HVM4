@@ -26,6 +26,6 @@ fn Term wnf_eql_sup_r(u64 eql_loc, Term a, Term sup) {
   Term b1  = heap_read(sup_loc + 1);
   Copy A   = term_clone(lab, a);
   Term eq0 = term_new_eql_at(eql_loc, A.k0, b0);
-  Term eq1 = term_new_eql_at(eql_loc, A.k1, b1);
+  Term eq1 = term_new_eql(A.k1, b1);
   return term_new_sup_at(sup_loc, lab, eq0, eq1);
 }
